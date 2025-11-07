@@ -1,5 +1,9 @@
 # PipeWire Combined Audio Output Reset Script
 
+<div align="center">
+  <img src="media/kitchen_sink.png" alt="Kitchen Sink - Everything but the kitchen sink" />
+</div>
+
 A robust shell script to restart PipeWire and create a combined audio sink that outputs to multiple devices simultaneously. Ideal for streaming, recording, or monitoring audio across multiple outputs (e.g., speakers + HDMI capture card, headphones + virtual device).
 
 ## Use Case
@@ -10,6 +14,16 @@ If you use PipeWire and need audio to play through multiple outputs at once—fo
 - **Monitoring**: Listen on headphones while recording to a USB audio interface
 
 This script safely restarts PipeWire services and sets up a combined sink that mirrors audio to two devices.
+
+### 2PC Streaming Setup
+
+This script is particularly useful for **2PC streaming setups** where you're running Linux as your primary machine and a separate box as your stream machine. While you don't need this setup to stream, it's incredibly helpful if you want to:
+
+- **Hear your main machine's audio** on your local speakers/headphones
+- **Send the same audio to your streaming PC** via HDMI capture card or network audio
+- **Keep your stream machine's audio configuration simple** without complex routing
+
+This is how I've been reliably running my 2PC stream setup with Linux as the primary gaming/production machine. The combined sink lets me monitor everything I'm doing while the stream PC captures a clean audio feed.
 
 ## Problem Solved
 
@@ -44,8 +58,8 @@ This typically requires a full system reboot. **This script provides a reboot-fr
 
 ```bash
 # Clone or download the script
-git clone https://github.com/YOUR_USERNAME/pipewire-combined-audio.git
-cd pipewire-combined-audio
+git clone https://github.com/ChiefGyk3D/pipewire_sink.git
+cd pipewire_sink
 
 # Make it executable
 chmod +x reset_pipewire.sh
@@ -257,11 +271,91 @@ Contributions welcome! Please:
 
 ## License
 
-MIT License - feel free to use, modify, and distribute.
+Mozilla Public License 2.0 (MPL-2.0) - feel free to use, modify, and distribute. See [LICENSE](LICENSE) for full terms.
 
-## Credits
+## 💝 Donations and Tips
 
-Created to solve persistent PipeWire audio device disappearance issues, particularly when using combined sinks for streaming and recording workflows.
+If you find Stream Daemon useful, consider supporting development:
+
+**Donate**:
+
+<div align="center">
+  <table>
+    <tr>
+      <td align="center"><a href="https://patreon.com/chiefgyk3d?utm_medium=unknown&utm_source=join_link&utm_campaign=creatorshare_creator&utm_content=copyLink" title="Patreon"><img src="https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/patreon.svg" width="32" height="32" alt="Patreon"/></a></td>
+      <td align="center"><a href="https://streamelements.com/chiefgyk3d/tip" title="StreamElements"><img src="media/streamelements.png" width="32" height="32" alt="StreamElements"/></a></td>
+    </tr>
+    <tr>
+      <td align="center">Patreon</td>
+      <td align="center">StreamElements</td>
+    </tr>
+  </table>
+</div>
+
+### Cryptocurrency Tips
+
+<div align="center">
+  <table style="border:none;">
+    <tr>
+      <td align="center" style="padding:8px; min-width:120px;">
+        <img src="https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/bitcoin.svg" width="28" height="28" alt="Bitcoin"/>
+      </td>
+      <td align="left" style="padding:8px;">
+        <b>Bitcoin</b><br/>
+        <code style="font-size:12px;">bc1qztdzcy2wyavj2tsuandu4p0tcklzttvdnzalla</code>
+      </td>
+    </tr>
+    <tr>
+      <td align="center" style="padding:8px; min-width:120px;">
+        <img src="https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/monero.svg" width="28" height="28" alt="Monero"/>
+      </td>
+      <td align="left" style="padding:8px;">
+        <b>Monero</b><br/>
+        <code style="font-size:12px;">84Y34QubRwQYK2HNviezeH9r6aRcPvgWmKtDkN3EwiuVbp6sNLhm9ffRgs6BA9X1n9jY7wEN16ZEpiEngZbecXseUrW8SeQ</code>
+      </td>
+    </tr>
+    <tr>
+      <td align="center" style="padding:8px; min-width:120px;">
+        <img src="https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/ethereum.svg" width="28" height="28" alt="Ethereum"/>
+      </td>
+      <td align="left" style="padding:8px;">
+        <b>Ethereum</b><br/>
+        <code style="font-size:12px;">0x554f18cfB684889c3A60219BDBE7b050C39335ED</code>
+      </td>
+    </tr>
+  </table>
+</div>
+
+---
+
+<div align="center">
+
+Made with ❤️ by [ChiefGyk3D](https://github.com/ChiefGyk3D)
+
+## Author & Socials
+
+<table>
+  <tr>
+    <td align="center"><a href="https://social.chiefgyk3d.com/@chiefgyk3d" title="Mastodon"><img src="https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/mastodon.svg" width="32" height="32" alt="Mastodon"/></a></td>
+    <td align="center"><a href="https://bsky.app/profile/chiefgyk3d.com" title="Bluesky"><img src="https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/bluesky.svg" width="32" height="32" alt="Bluesky"/></a></td>
+    <td align="center"><a href="http://twitch.tv/chiefgyk3d" title="Twitch"><img src="https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/twitch.svg" width="32" height="32" alt="Twitch"/></a></td>
+    <td align="center"><a href="https://www.youtube.com/channel/UCvFY4KyqVBuYd7JAl3NRyiQ" title="YouTube"><img src="https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/youtube.svg" width="32" height="32" alt="YouTube"/></a></td>
+    <td align="center"><a href="https://kick.com/chiefgyk3d" title="Kick"><img src="https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/kick.svg" width="32" height="32" alt="Kick"/></a></td>
+    <td align="center"><a href="https://www.tiktok.com/@chiefgyk3d" title="TikTok"><img src="https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/tiktok.svg" width="32" height="32" alt="TikTok"/></a></td>
+    <td align="center"><a href="https://discord.chiefgyk3d.com" title="Discord"><img src="https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/discord.svg" width="32" height="32" alt="Discord"/></a></td>
+    <td align="center"><a href="https://matrix-invite.chiefgyk3d.com" title="Matrix"><img src="https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/matrix.svg" width="32" height="32" alt="Matrix"/></a></td>
+  </tr>
+  <tr>
+    <td align="center">Mastodon</td>
+    <td align="center">Bluesky</td>
+    <td align="center">Twitch</td>
+    <td align="center">YouTube</td>
+    <td align="center">Kick</td>
+    <td align="center">TikTok</td>
+    <td align="center">Discord</td>
+    <td align="center">Matrix</td>
+  </tr>
+</table>
 
 ## Related Resources
 
