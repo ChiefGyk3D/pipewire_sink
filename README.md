@@ -218,30 +218,22 @@ See `man pactl` and PipeWire documentation for more options.
 
 ### Run automatically on login
 
-Create a systemd user service:
+An example systemd user unit file is provided in this repository at
+`examples/pipewire-combined.service`. To enable the example on your machine:
 
 ```bash
+# copy the example to your user systemd folder
 mkdir -p ~/.config/systemd/user/
-cat > ~/.config/systemd/user/pipewire-combined.service <<'EOF'
-[Unit]
-Description=Setup PipeWire Combined Audio Sink
-After=pipewire.service
+cp examples/pipewire-combined.service ~/.config/systemd/user/pipewire-combined.service
 
-[Service]
-Type=oneshot
-ExecStart=/home/YOUR_USERNAME/.local/bin/reset-pipewire
-RemainAfterExit=no
-
-[Install]
-WantedBy=default.target
-EOF
-
-# Enable and start
-systemctl --user enable pipewire-combined.service
-systemctl --user start pipewire-combined.service
+# reload user systemd units, enable and start the one-shot service
+systemctl --user daemon-reload
+systemctl --user enable --now pipewire-combined.service
 ```
 
-Replace `/home/YOUR_USERNAME/.local/bin/reset-pipewire` with the actual path to your script.
+By default the example uses `ExecStart=%h/.local/bin/reset-pipewire` (expands to
+your home directory). If you installed the script elsewhere, update the
+`ExecStart` path in the copied unit file accordingly.
 
 ## How It Works
 
