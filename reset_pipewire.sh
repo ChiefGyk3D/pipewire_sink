@@ -78,10 +78,10 @@ fallback_kill_and_cleanup() {
 }
 
 detect_sinks() {
-  # Produce a list of sink names (second column)
-  sinks=( $(pactl list short sinks 2>/dev/null | awk '{print $2}') )
+  # Produce a list of sink names (second column), excluding dummy sinks
+  sinks=( $(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -v "auto_null" | grep -v "dummy") )
   if [ ${#sinks[@]} -eq 0 ]; then
-    LOG "No sinks detected by pactl."
+    LOG "No real sinks detected by pactl (excluding dummy/null sinks)."
     return 1
   fi
 
@@ -146,13 +146,21 @@ load_combined() {
 
   detect_sinks || return 1
 
-  # verify sinks exist
+  # verify sinks exist (skip empty sinks)
   for s in "$PRIMARY_SINK" "$SECONDARY_SINK"; do
-    if ! pactl list short sinks | awk '{print $2}' | grep -Fxq -- "$s"; then
-      LOG "Sink $s not present; aborting combined sink creation."
-      return 1
+    if [ -n "$s" ]; then
+      if ! pactl list short sinks | awk '{print $2}' | grep -Fxq -- "$s"; then
+        LOG "Sink $s not present; aborting combined sink creation."
+        return 1
+      fi
     fi
   done
+  
+  # Must have at least two sinks for a combined sink
+  if [ -z "$SECONDARY_SINK" ]; then
+    LOG "No secondary sink available; need at least 2 sinks for combined output."
+    return 1
+  fi
 
   unload_saved_module
 
@@ -191,7 +199,19 @@ main() {
     fallback_kill_and_cleanup
   fi
 
-  sleep 1
+  # Wait longer for sinks to appear after restart
+  LOG "Waiting for audio sinks to become available..."
+  sleep 3
+
+  # Retry sink detection a few times if needed
+  for i in {1..5}; do
+    if pactl list short sinks 2>/dev/null | grep -v "auto_null" | grep -q .; then
+      LOG "Audio sinks detected."
+      break
+    fi
+    LOG "Waiting for real audio sinks (attempt $i/5)..."
+    sleep 2
+  done
 
   load_combined || LOG "Combined sink creation failed (non-fatal)."
 
