@@ -14,6 +14,9 @@ LOG() { printf '%s %s\n' "$(date +'%F %T')" "$*"; }
 # Examples:
 #   PRIMARY_SINK="alsa_output.usb-Manufacturer_Device.analog-stereo"
 #   SECONDARY_SINK="alsa_output.pci-0000_00_1f.3.hdmi-stereo"
+#
+# Environment variables:
+# - CLEAN_STATE=1: Force clean WirePlumber state files (use if devices won't appear)
 # ============================================================================
 PRIMARY_SINK=""
 SECONDARY_SINK=""
@@ -65,6 +68,13 @@ fallback_kill_and_cleanup() {
 
     LOG "Removing stale runtime sockets under ${STATE_DIR} (pipewire/pulse) ..."
     rm -rf "${STATE_DIR}"/pipewire* "${STATE_DIR}"/pulse* "${STATE_DIR}"/pw-* || true
+
+    # Also clean WirePlumber state if requested or if state looks corrupted
+    if [ "${CLEAN_STATE:-}" = "1" ] || [ ! -s "${HOME}/.local/state/wireplumber/default-nodes" ]; then
+        LOG "Cleaning WirePlumber state files..."
+        rm -f "${HOME}/.local/state/wireplumber/default-nodes" \
+              "${HOME}/.local/state/wireplumber/default-routes" || true
+    fi
 
     sleep 1
 
@@ -203,12 +213,21 @@ main() {
   sleep 3
 
   # Retry sink detection a few times if needed
-  for i in {1..5}; do
-    if pactl list short sinks 2>/dev/null | grep -v "auto_null" | grep -q .; then
-      LOG "Audio sinks detected."
+  local retries=0
+  local max_retries=10
+  for i in $(seq 1 $max_retries); do
+    # Check for hardware sinks (alsa_output) excluding dummy/null
+    hw_sinks=$(pactl list short sinks 2>/dev/null | grep "alsa_output" | grep -v "auto_null" | wc -l)
+    if [ "$hw_sinks" -ge 2 ]; then
+      LOG "Hardware audio sinks detected ($hw_sinks devices)."
       break
     fi
-    LOG "Waiting for real audio sinks (attempt $i/5)..."
+    if [ $i -eq $max_retries ]; then
+      LOG "WARNING: Only $hw_sinks hardware sink(s) found after $max_retries attempts."
+      LOG "You may need to run with CLEAN_STATE=1 or check hardware connections."
+      break
+    fi
+    LOG "Waiting for hardware audio sinks (attempt $i/$max_retries, found $hw_sinks)..."
     sleep 2
   done
 

@@ -174,6 +174,20 @@ You should see audio playing simultaneously on both outputs.
 - Check if PipeWire user services are enabled: `systemctl --user status pipewire pipewire-pulse wireplumber`
 - If services are masked or disabled, enable them: `systemctl --user enable --now pipewire pipewire-pulse wireplumber`
 
+### Audio devices still disappear after using the script
+
+**Problem**: Script works temporarily but devices disappear again after hours/days.
+
+**Solutions**:
+- **Use the watchdog service** (see below) to automatically detect and fix issues
+- Run with `CLEAN_STATE=1 reset-pipewire` to force clean WirePlumber state files
+- Check for USB power management issues: `lsusb -t` to see if devices are suspending
+- Disable USB autosuspend for audio devices: Add to `/etc/udev/rules.d/50-usb-audio-powersave.rules`:
+  ```
+  ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="XXXX", ATTR{idProduct}=="YYYY", TEST=="power/control", ATTR{power/control}="on"
+  ```
+  (Replace XXXX and YYYY with your device IDs from `lsusb`)
+
 ### Audio still broken after running script
 
 **Problem**: Script runs but audio devices still don't appear in settings.
@@ -235,17 +249,47 @@ By default the example uses `ExecStart=%h/.local/bin/reset-pipewire` (expands to
 your home directory). If you installed the script elsewhere, update the
 `ExecStart` path in the copied unit file accordingly.
 
+### Automatic monitoring with watchdog service (Recommended)
+
+If your audio devices disappear periodically, you can set up an automatic watchdog that monitors your audio devices and runs the reset script when needed:
+
+```bash
+# Copy the watchdog script and service
+cp ~/src/pipewire/examples/pipewire-watchdog.sh ~/.local/bin/pipewire-watchdog
+chmod +x ~/.local/bin/pipewire-watchdog
+cp ~/src/pipewire/examples/pipewire-watchdog.service ~/.config/systemd/user/
+
+# Enable and start the watchdog
+systemctl --user daemon-reload
+systemctl --user enable --now pipewire-watchdog.service
+
+# Check status
+systemctl --user status pipewire-watchdog.service
+
+# View watchdog logs
+journalctl --user -u pipewire-watchdog -f
+```
+
+The watchdog:
+- Checks audio device health every 30 seconds
+- Triggers reset after 3 consecutive failures (90 seconds of issues)
+- Automatically restarts if it crashes
+- Logs all actions to systemd journal
+
 ## How It Works
 
 1. **Restart Phase**: 
    - Tries to restart PipeWire services via systemd
    - If systemd fails, kills processes and removes stale runtime sockets from `$XDG_RUNTIME_DIR`
+   - Optionally cleans WirePlumber state files if `CLEAN_STATE=1` is set or if corruption is detected
    - Waits for services to come back up
 
 2. **Detection Phase**:
-   - Lists available sinks via `pactl`
+   - Waits up to 20 seconds for hardware audio devices to appear
+   - Lists available sinks via `pactl`, excluding dummy/null devices
    - Auto-detects primary (USB preferred) and secondary (HDMI/PCI preferred) sinks
    - Uses user-configured sink names if provided
+   - Verifies at least 2 hardware sinks are available before proceeding
 
 3. **Module Phase**:
    - Unloads any previously saved combined module

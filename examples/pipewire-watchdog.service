@@ -1,0 +1,16 @@
+# Systemd service to monitor PipeWire and automatically reset if audio devices disappear
+# Copy to ~/.config/systemd/user/pipewire-watchdog.service
+
+[Unit]
+Description=PipeWire Audio Watchdog
+After=pipewire.service wireplumber.service
+Requires=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/pipewire-watchdog
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
