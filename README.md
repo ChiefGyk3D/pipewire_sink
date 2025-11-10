@@ -46,6 +46,10 @@ This typically requires a full system reboot. **This script provides a reboot-fr
 - ✅ **Configurable**: Set exact sink names or let the script detect them
 - ✅ **Timestamped logging**: Easy troubleshooting with clear log output
 - ✅ **Non-destructive**: Preserves user config, only cleans runtime state
+- ✅ **Watchdog service**: Optional automatic monitoring and recovery
+- ✅ **USB device reset**: Handle stuck USB audio devices without physical replug
+- ✅ **State cleanup**: Clear corrupted WirePlumber state files
+- ✅ **Status checker**: Quick audio-status command for system overview
 
 ## Requirements
 
@@ -64,9 +68,13 @@ cd pipewire_sink
 # Make it executable
 chmod +x reset_pipewire.sh
 
-# Optional: Copy to your local bin for easy access
+# Install helper scripts to your local bin
 mkdir -p ~/.local/bin
 cp reset_pipewire.sh ~/.local/bin/reset-pipewire
+cp examples/audio-status.sh ~/.local/bin/audio-status
+cp examples/reset-rodecaster.sh ~/.local/bin/reset-rodecaster
+cp examples/pipewire-watchdog.sh ~/.local/bin/pipewire-watchdog
+chmod +x ~/.local/bin/reset-pipewire ~/.local/bin/audio-status ~/.local/bin/reset-rodecaster ~/.local/bin/pipewire-watchdog
 ```
 
 ## Usage
@@ -124,11 +132,28 @@ SECONDARY_SINK="alsa_output.pci-..." \
 ./reset_pipewire.sh
 ```
 
+### Advanced Options
+
+**Clean WirePlumber State** - Use if devices won't appear:
+```bash
+CLEAN_STATE=1 ./reset_pipewire.sh
+```
+
+**Reset USB Audio Devices** - For devices that are "stuck" (shows audio but no sound):
+```bash
+RESET_USB=1 ./reset_pipewire.sh
+```
+*Note: Requires `usbreset` utility. Install on Ubuntu/Debian: `sudo apt install usbutils`*
+
 ## Verification
 
 After running the script, verify it worked:
 
 ```bash
+# Quick status check (recommended)
+audio-status
+
+# Or check manually:
 # Check if PipeWire is running
 systemctl --user status pipewire.service
 
@@ -143,6 +168,40 @@ paplay /usr/share/sounds/alsa/Front_Center.wav
 ```
 
 You should see audio playing simultaneously on both outputs.
+
+## Helper Tools
+
+After installation, you'll have access to these helper scripts:
+
+### `audio-status` - Quick System Status
+Shows a comprehensive overview of your audio system:
+```bash
+audio-status
+```
+
+Displays:
+- PipeWire service status (pipewire, pipewire-pulse, wireplumber)
+- All audio sinks with their current state
+- Default sink configuration
+- Watchdog service status
+- Combined sink module information
+- Connected USB audio devices
+
+### `reset-pipewire` - Main Reset Script
+Restarts PipeWire and recreates the combined sink:
+```bash
+reset-pipewire                    # Normal reset
+CLEAN_STATE=1 reset-pipewire      # Clean WirePlumber state files
+RESET_USB=1 reset-pipewire        # Also reset USB audio devices
+```
+
+### `reset-rodecaster` - USB Device Reset
+For when USB audio devices are stuck (shows activity but no sound):
+```bash
+sudo reset-rodecaster
+```
+
+This unbinds/rebinds the USB device (simulating unplug/replug) and then runs the PipeWire reset.
 
 ## Troubleshooting
 
@@ -210,6 +269,24 @@ pactl unload-module 12345
 # Or delete the saved module ID file and re-run the script
 rm ~/.local/state/reset_pipewire_combined_module_id
 ```
+
+### RØDECaster/USB device shows audio but no sound
+
+**Problem**: Device is connected, shows audio levels/activity, but no sound comes out until you unplug/replug it.
+
+**Solution**: Use the dedicated reset script:
+```bash
+# Copy the helper script
+cp ~/src/pipewire/examples/reset-rodecaster.sh ~/.local/bin/reset-rodecaster
+chmod +x ~/.local/bin/reset-rodecaster
+
+# Run when your device gets stuck
+sudo ~/.local/bin/reset-rodecaster
+```
+
+This script unbinds and rebinds the USB device (simulating unplug/replug) and then resets PipeWire automatically.
+
+**For automatic handling**: You can set up a udev rule or use the `RESET_USB=1` option with the main script.
 
 ## Advanced Configuration
 

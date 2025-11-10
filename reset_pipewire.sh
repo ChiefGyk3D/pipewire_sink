@@ -17,6 +17,7 @@ LOG() { printf '%s %s\n' "$(date +'%F %T')" "$*"; }
 #
 # Environment variables:
 # - CLEAN_STATE=1: Force clean WirePlumber state files (use if devices won't appear)
+# - RESET_USB=1: Reset USB audio devices before restarting PipeWire (requires usbreset)
 # ============================================================================
 PRIMARY_SINK=""
 SECONDARY_SINK=""
@@ -30,6 +31,43 @@ MODULE_ID_FILE="${HOME}/.local/state/reset_pipewire_combined_module_id"
 
 # Services we try to restart (some may not exist on every system)
 SERVICES=(pipewire.socket pipewire.service pipewire-pulse.service wireplumber.service)
+
+reset_usb_audio_devices() {
+    # Try to reset USB audio devices that might be in a stuck state
+    # This requires usbreset utility or manual unbind/bind
+    
+    if [ "${RESET_USB:-}" != "1" ]; then
+        return 0
+    fi
+    
+    LOG "Attempting to reset USB audio devices..."
+    
+    # Find USB audio devices
+    local usb_audio_devices
+    usb_audio_devices=$(lsusb | grep -iE 'audio|rode|behringer|focusrite|scarlett|presonus|m-audio' || true)
+    
+    if [ -z "$usb_audio_devices" ]; then
+        LOG "No USB audio devices found to reset"
+        return 0
+    fi
+    
+    # Try using usbreset if available
+    if command -v usbreset >/dev/null 2>&1; then
+        echo "$usb_audio_devices" | while read -r line; do
+            bus=$(echo "$line" | awk '{print $2}')
+            device=$(echo "$line" | awk '{print $4}' | tr -d ':')
+            device_name=$(echo "$line" | cut -d' ' -f7-)
+            LOG "Resetting USB device: $device_name (Bus $bus Device $device)"
+            sudo usbreset "/dev/bus/usb/$bus/$device" 2>&1 | head -5 || true
+        done
+        sleep 2
+    else
+        LOG "usbreset not available. To reset USB devices, install usbreset or use UNBIND_USB=1"
+        LOG "Install with: sudo apt install usbutils (Debian/Ubuntu) or compile from source"
+    fi
+    
+    return 0
+}
 
 restart_via_systemd() {
     local existing=()
@@ -200,6 +238,9 @@ load_combined() {
 
 main() {
   LOG "=== reset_pipewire: start ==="
+
+  # Optionally reset USB audio devices if they're stuck
+  reset_usb_audio_devices
 
   if restart_via_systemd; then
     LOG "systemd restart path completed."

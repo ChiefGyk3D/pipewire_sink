@@ -28,6 +28,14 @@ check_audio_health() {
         return 1
     fi
     
+    # Check for sinks in ERROR state or with device errors
+    local error_sinks
+    error_sinks=$(pactl list sinks 2>/dev/null | grep -c "State: ERROR" || true)
+    if [ "$error_sinks" -gt 0 ]; then
+        LOG "WARNING: $error_sinks sink(s) in ERROR state"
+        return 1
+    fi
+    
     return 0
 }
 
