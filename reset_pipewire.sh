@@ -254,26 +254,53 @@ main() {
   sleep 3
 
   # Retry sink detection a few times if needed
-  local retries=0
   local max_retries=10
-  for i in $(seq 1 $max_retries); do
+  local i=1
+  while [ $i -le $max_retries ]; do
     # Check for hardware sinks (alsa_output) excluding dummy/null
-    hw_sinks=$(pactl list short sinks 2>/dev/null | grep "alsa_output" | grep -v "auto_null" | wc -l)
+    hw_sinks=$(pactl list short sinks 2>/dev/null | grep "alsa_output" | grep -v "auto_null" | wc -l || echo "0")
+    
+    # If pactl fails completely, wait and retry
+    if ! pactl info >/dev/null 2>&1; then
+      LOG "Waiting for PipeWire to be ready (attempt $i/$max_retries)..."
+      sleep 2
+      i=$((i + 1))
+      continue
+    fi
+    
     if [ "$hw_sinks" -ge 2 ]; then
       LOG "Hardware audio sinks detected ($hw_sinks devices)."
       break
     fi
+    
     if [ $i -eq $max_retries ]; then
       LOG "WARNING: Only $hw_sinks hardware sink(s) found after $max_retries attempts."
       LOG "You may need to run with CLEAN_STATE=1 or check hardware connections."
       break
     fi
+    
     LOG "Waiting for hardware audio sinks (attempt $i/$max_retries, found $hw_sinks)..."
     sleep 2
+    i=$((i + 1))
   done
 
   load_combined || LOG "Combined sink creation failed (non-fatal)."
 
+  # Show status summary
+  LOG ""
+  LOG "Audio devices status:"
+  pactl list short sinks 2>/dev/null | while read -r id name driver format channels rate state; do
+    device_short=$(echo "$name" | sed 's/alsa_output\.//' | cut -d'.' -f1 | head -c 40)
+    LOG "  [$state] $device_short"
+  done
+  
+  if pactl list short sinks 2>/dev/null | grep -q "SUSPENDED"; then
+    LOG ""
+    LOG "Note: SUSPENDED devices are ready to use (power-saving mode)."
+    LOG "      They automatically wake when audio plays."
+  fi
+  
+  LOG ""
   LOG "=== reset_pipewire: done ==="
 }
 

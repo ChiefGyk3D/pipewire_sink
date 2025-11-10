@@ -7,9 +7,20 @@ systemctl --user is-active pipewire.service pipewire-pulse.service wireplumber.s
 
 echo ""
 echo "=== Audio Sinks ==="
+has_suspended=false
 pactl list short sinks | while read -r id name driver format channels rate state; do
     printf "%-3s %-60s %s\n" "$id" "$name" "$state"
+    if [ "$state" = "SUSPENDED" ]; then
+        has_suspended=true
+    fi
 done
+
+# Check if any sinks are suspended and explain
+if pactl list short sinks | grep -q "SUSPENDED"; then
+    echo ""
+    echo "ℹ️  SUSPENDED = Device ready but powered down (normal when not playing audio)"
+    echo "   Devices automatically wake when audio plays"
+fi
 
 echo ""
 echo "=== Default Sink ==="

@@ -25,6 +25,11 @@ This script is particularly useful for **2PC streaming setups** where you're run
 
 This is how I've been reliably running my 2PC stream setup with Linux as the primary gaming/production machine. The combined sink lets me monitor everything I'm doing while the stream PC captures a clean audio feed.
 
+<div align="center">
+  <img src="media/settings-carla.png" alt="Audio Settings with Combined Sink" />
+  <p><em>Combined audio output routing to multiple devices simultaneously</em></p>
+</div>
+
 ## Problem Solved
 
 When using `module-combine-sink` in PipeWire, audio devices can sometimes disappear from system settings after a day or two, especially after:
@@ -72,9 +77,9 @@ chmod +x reset_pipewire.sh
 mkdir -p ~/.local/bin
 cp reset_pipewire.sh ~/.local/bin/reset-pipewire
 cp examples/audio-status.sh ~/.local/bin/audio-status
-cp examples/reset-rodecaster.sh ~/.local/bin/reset-rodecaster
+cp examples/reset-usb-audio.sh ~/.local/bin/reset-usb-audio
 cp examples/pipewire-watchdog.sh ~/.local/bin/pipewire-watchdog
-chmod +x ~/.local/bin/reset-pipewire ~/.local/bin/audio-status ~/.local/bin/reset-rodecaster ~/.local/bin/pipewire-watchdog
+chmod +x ~/.local/bin/reset-pipewire ~/.local/bin/audio-status ~/.local/bin/reset-usb-audio ~/.local/bin/pipewire-watchdog
 ```
 
 ## Usage
@@ -84,6 +89,10 @@ chmod +x ~/.local/bin/reset-pipewire ~/.local/bin/audio-status ~/.local/bin/rese
 ```bash
 ./reset_pipewire.sh
 ```
+
+<div align="center">
+  <img src="media/reset-pipewire.png" alt="reset-pipewire Script Output" />
+</div>
 
 The script will:
 1. Restart PipeWire services
@@ -169,6 +178,27 @@ paplay /usr/share/sounds/alsa/Front_Center.wav
 
 You should see audio playing simultaneously on both outputs.
 
+### Understanding Audio Device States
+
+PipeWire shows different states for audio devices:
+
+- **SUSPENDED** - Device is ready but powered down (normal when idle). Automatically wakes when audio plays.
+- **IDLE** - Device is awake and ready, but not currently playing audio
+- **RUNNING** - Currently playing audio
+- **ERROR** - Device has an error and needs attention
+
+**SUSPENDED is normal!** It's PipeWire's power-saving feature. Devices in SUSPENDED state will instantly wake up when audio plays. If you see SUSPENDED, your audio is working correctly.
+
+### After Running the Script
+
+**Note**: Applications that were playing audio when PipeWire restarted may need to be restarted to reconnect to the audio system. This includes:
+- Web browsers (Chrome, Firefox)
+- Media players (VLC, MPV)
+- Communication apps (Discord, Zoom)
+- Games
+
+Most modern applications will automatically reconnect, but if an app has no audio after running the script, simply restart that application.
+
 ## Helper Tools
 
 After installation, you'll have access to these helper scripts:
@@ -178,6 +208,10 @@ Shows a comprehensive overview of your audio system:
 ```bash
 audio-status
 ```
+
+<div align="center">
+  <img src="media/audio-status.png" alt="Audio Status Output Example" />
+</div>
 
 Displays:
 - PipeWire service status (pipewire, pipewire-pulse, wireplumber)
@@ -195,13 +229,24 @@ CLEAN_STATE=1 reset-pipewire      # Clean WirePlumber state files
 RESET_USB=1 reset-pipewire        # Also reset USB audio devices
 ```
 
-### `reset-rodecaster` - USB Device Reset
+### `reset-usb-audio` - USB Device Reset
 For when USB audio devices are stuck (shows activity but no sound):
 ```bash
-sudo reset-rodecaster
+sudo reset-usb-audio                    # Auto-detects RØDECaster Pro II
+sudo reset-usb-audio "Scarlett"         # Reset by device name
+sudo reset-usb-audio 19f7:0026          # Reset by VID:PID
+AUTO_RESET_PIPEWIRE=0 sudo reset-usb-audio  # Skip automatic PipeWire reset
 ```
 
-This unbinds/rebinds the USB device (simulating unplug/replug) and then runs the PipeWire reset.
+<div align="center">
+  <img src="media/reset-usb-audio.png" alt="reset-usb-audio Script Output" />
+</div>
+
+This script:
+- Deauthorizes/reauthorizes the USB device (simulating unplug/replug)
+- Automatically resets PipeWire and recreates combined sink (can be disabled)
+- Works with any USB audio device (RØDECaster, Scarlett, Behringer, etc.)
+- No physical unplugging needed!
 
 ## Troubleshooting
 
@@ -274,19 +319,33 @@ rm ~/.local/state/reset_pipewire_combined_module_id
 
 **Problem**: Device is connected, shows audio levels/activity, but no sound comes out until you unplug/replug it.
 
-**Solution**: Use the dedicated reset script:
+**Solution**: Use the dedicated reset script (one command!):
 ```bash
-# Copy the helper script
-cp ~/src/pipewire/examples/reset-rodecaster.sh ~/.local/bin/reset-rodecaster
-chmod +x ~/.local/bin/reset-rodecaster
-
-# Run when your device gets stuck
-sudo ~/.local/bin/reset-rodecaster
+sudo reset-usb-audio
 ```
 
-This script unbinds and rebinds the USB device (simulating unplug/replug) and then resets PipeWire automatically.
+The script will:
+1. Find and reset your USB audio device
+2. Automatically reset PipeWire
+3. Recreate your combined sink
 
-**For automatic handling**: You can set up a udev rule or use the `RESET_USB=1` option with the main script.
+**Works with any USB audio device**:
+```bash
+sudo reset-usb-audio                     # Auto-detects RØDECaster Pro II
+sudo reset-usb-audio "Scarlett 2i2"      # Find by device name  
+sudo reset-usb-audio 19f7:0026           # Specify VID:PID directly
+```
+
+**Disable automatic PipeWire reset**:
+```bash
+AUTO_RESET_PIPEWIRE=0 sudo reset-usb-audio
+```
+
+**Alternative**: Use the `RESET_USB=1` option with the main script to reset all USB audio devices at once:
+```bash
+RESET_USB=1 reset-pipewire
+```
+*Note: This requires the `usbreset` utility. Install with: `sudo apt install usbutils`*
 
 ## Advanced Configuration
 
@@ -352,6 +411,10 @@ The watchdog:
 - Triggers reset after 3 consecutive failures (90 seconds of issues)
 - Automatically restarts if it crashes
 - Logs all actions to systemd journal
+
+<div align="center">
+  <img src="media/watchdog.png" alt="PipeWire Watchdog Service Status" />
+</div>
 
 ## How It Works
 
