@@ -51,10 +51,11 @@ This typically requires a full system reboot. **This script provides a reboot-fr
 - ✅ **Configurable**: Set exact sink names or let the script detect them
 - ✅ **Timestamped logging**: Easy troubleshooting with clear log output
 - ✅ **Non-destructive**: Preserves user config, only cleans runtime state
-- ✅ **Watchdog service**: Optional automatic monitoring and recovery
+- ✅ **Watchdog service**: Optional automatic monitoring and recovery with enhanced health checks
 - ✅ **USB device reset**: Handle stuck USB audio devices without physical replug
 - ✅ **State cleanup**: Clear corrupted WirePlumber state files
 - ✅ **Status checker**: Quick audio-status command for system overview
+- ✅ **Nuclear option**: Aggressive fallback with kernel module reload for severe failures
 
 ## Requirements
 
@@ -191,13 +192,18 @@ PipeWire shows different states for audio devices:
 
 ### After Running the Script
 
-**Note**: Applications that were playing audio when PipeWire restarted may need to be restarted to reconnect to the audio system. This includes:
-- Web browsers (Chrome, Firefox)
-- Media players (VLC, MPV)
-- Communication apps (Discord, Zoom)
-- Games
+The script automatically attempts to reconnect audio applications by:
+- Moving all active audio streams to the new default sink
+- Signaling Firefox to reconnect its audio
+- Detecting Chrome/Chromium (which usually auto-reconnect)
 
-Most modern applications will automatically reconnect, but if an app has no audio after running the script, simply restart that application.
+**However**, some applications may still need to be restarted if audio doesn't return:
+- Web browsers (Chrome, Firefox) - try reloading the tab first
+- Media players (VLC, MPV) - pause and resume may work
+- Communication apps (Discord, Zoom, Teams)
+- Games - usually require full restart
+
+**Pro Tip**: Enable the watchdog service to catch and fix audio issues *before* they break, minimizing the need for app restarts.
 
 ## Helper Tools
 
@@ -241,6 +247,23 @@ AUTO_RESET_PIPEWIRE=0 sudo reset-usb-audio  # Skip automatic PipeWire reset
 <div align="center">
   <img src="media/reset-usb-audio.png" alt="reset-usb-audio Script Output" />
 </div>
+
+### `reset-pipewire-nuclear` - Nuclear Option (For Severe Failures)
+When normal reset doesn't work and you'd otherwise need to reboot:
+```bash
+reset-pipewire-nuclear          # Aggressive cleanup without kernel reload
+sudo reset-pipewire-nuclear     # Full nuclear - includes kernel module reload
+```
+
+Use this when:
+- Normal `reset-pipewire` fails completely
+- You see "can't open control for card hw:X" errors in logs
+- Audio system is completely unresponsive
+- Hardware-level issues that survive normal restarts
+
+This performs force-kill of all audio processes, removes all state/runtime files, and optionally reloads kernel modules. See Troubleshooting section for details.
+
+### `reset-usb-audio` - USB Device Reset (Continued)
 
 This script:
 - Deauthorizes/reauthorizes the USB device (simulating unplug/replug)
@@ -294,13 +317,44 @@ This script:
 
 ### Audio still broken after running script
 
-**Problem**: Script runs but audio devices still don't appear in settings.
+**Problem**: Script runs but audio devices still don't appear in settings, or you see errors like "can't open control for card hw:0" in logs.
 
 **Solutions**:
-- Check PipeWire config for errors: `~/.config/pipewire/`
-- Verify kernel modules: `lsmod | grep snd`
-- Test if ALSA sees devices: `aplay -l`
-- As a last resort, reboot and then use this script going forward
+1. **Try the nuclear reset option first** (see below)
+2. Check PipeWire config for errors: `~/.config/pipewire/`
+3. Verify kernel modules: `lsmod | grep snd`
+4. Test if ALSA sees devices: `aplay -l`
+5. As a last resort, reboot and then use this script going forward
+
+### Nuclear reset option (for severe failures)
+
+**Problem**: Normal `reset-pipewire` doesn't work, devices still missing, or you see hardware errors like "can't open control for card hw:X" in journal logs.
+
+**When to use**: This is the aggressive fallback for cases where:
+- Normal reset-pipewire fails completely
+- Hardware card errors appear in logs
+- Audio system is completely unresponsive
+- You would otherwise need to reboot
+
+**Solution**: Use the nuclear reset script:
+```bash
+reset-pipewire-nuclear
+```
+
+This performs a complete teardown and rebuild:
+1. Force-kills all audio processes (pipewire, wireplumber, pulseaudio)
+2. Removes all runtime sockets and state files
+3. Optionally reloads kernel audio modules (with `sudo`)
+4. Waits for clean restart and verifies connectivity
+
+**With kernel module reload** (more thorough, requires sudo):
+```bash
+sudo reset-pipewire-nuclear
+```
+
+This additionally reloads the ALSA kernel modules (`snd_hda_intel`, etc.), which can fix hardware-level issues that survive normal restarts.
+
+**After nuclear reset**: The watchdog will detect that audio is back and recreate your combined sink automatically within 30 seconds. Or manually run `reset-pipewire` if you want it immediately.
 
 ### Want to remove the combined sink
 

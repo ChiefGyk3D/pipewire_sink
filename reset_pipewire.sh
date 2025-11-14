@@ -300,6 +300,29 @@ main() {
     LOG "      They automatically wake when audio plays."
   fi
   
+  # Try to reconnect common applications
+  LOG ""
+  LOG "Attempting to reconnect audio applications..."
+  
+  # Move all sink inputs to the new default sink to force reconnection
+  if command -v pactl >/dev/null 2>&1; then
+    default_sink=$(pactl info 2>/dev/null | grep "Default Sink:" | cut -d' ' -f3)
+    if [ -n "$default_sink" ]; then
+      pactl list short sink-inputs 2>/dev/null | while read -r input_id rest; do
+        pactl move-sink-input "$input_id" "$default_sink" 2>/dev/null || true
+      done
+    fi
+  fi
+  
+  # Find and send SIGUSR1 to Firefox (tells it to reconnect audio)
+  pgrep -x firefox >/dev/null 2>&1 && pkill -SIGUSR1 firefox 2>/dev/null && LOG "  Signaled Firefox to reconnect audio" || true
+  
+  # Chrome/Chromium usually auto-reconnect, but we can try
+  pgrep -x chrome >/dev/null 2>&1 && LOG "  Chrome detected (usually auto-reconnects)" || true
+  pgrep -x chromium >/dev/null 2>&1 && LOG "  Chromium detected (usually auto-reconnects)" || true
+  
+  LOG ""
+  LOG "If applications still have no audio, you may need to restart them manually."
   LOG ""
   LOG "=== reset_pipewire: done ==="
 }
