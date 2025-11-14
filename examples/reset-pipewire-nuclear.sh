@@ -69,6 +69,21 @@ for i in {1..10}; do
     sleep 2
 done
 
+# Restore analog profiles for USB devices (WirePlumber resets to digital by default)
+LOG ""
+LOG "Restoring analog profiles for USB audio devices..."
+while IFS= read -r card; do
+    if pactl list cards | grep -A1 "Name: $card" | grep -q "usb-"; then
+        # Check if analog-stereo profile is available
+        if pactl list cards | grep -A50 "Name: $card" | grep -q "output:analog-stereo:"; then
+            LOG "  Setting $card to analog-stereo"
+            pactl set-card-profile "$card" output:analog-stereo 2>/dev/null || true
+        fi
+    fi
+done < <(pactl list short cards | awk '{print $2}')
+
+sleep 2
+
 # Show status
 LOG ""
 LOG "Current audio status:"
