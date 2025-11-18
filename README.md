@@ -53,9 +53,10 @@ This typically requires a full system reboot. **This script provides a reboot-fr
 - ✅ **Non-destructive**: Preserves user config, only cleans runtime state
 - ✅ **Watchdog service**: Optional automatic monitoring and recovery with enhanced health checks
 - ✅ **USB device reset**: Handle stuck USB audio devices without physical replug
-- ✅ **State cleanup**: Clear corrupted WirePlumber state files
+- ✅ **State cleanup**: Clear corrupted Wireplumber state files
 - ✅ **Status checker**: Quick audio-status command for system overview
 - ✅ **Nuclear option**: Aggressive fallback with kernel module reload for severe failures
+- ✅ **Sample rate management**: Auto-detects and fixes sample rate mismatches to prevent pitch shifting
 
 ## Requirements
 
@@ -81,6 +82,11 @@ cp examples/audio-status.sh ~/.local/bin/audio-status
 cp examples/reset-usb-audio.sh ~/.local/bin/reset-usb-audio
 cp examples/pipewire-watchdog.sh ~/.local/bin/pipewire-watchdog
 chmod +x ~/.local/bin/reset-pipewire ~/.local/bin/audio-status ~/.local/bin/reset-usb-audio ~/.local/bin/pipewire-watchdog
+
+# (Optional) Install sample rate config to prevent pitch shifting
+# Note: reset-pipewire will auto-create this if it detects mismatched rates
+mkdir -p ~/.config/pipewire/pipewire.conf.d/
+cp examples/99-custom-rate.conf ~/.config/pipewire/pipewire.conf.d/
 ```
 
 ## Usage
@@ -406,7 +412,13 @@ RESET_USB=1 reset-pipewire
 
 **Cause**: Sample rate mismatch. Your devices are running at different sample rates (e.g., 44.1kHz vs 48kHz), causing pitch shifting when audio is resampled incorrectly.
 
-**Solution**: Force all devices to use 48kHz (professional standard):
+**Automatic Fix**: The `reset-pipewire` script automatically detects sample rate mismatches and creates the fix. Just run:
+```bash
+reset-pipewire
+```
+The script will detect the mismatch, create the config file, and notify you. After the next PipeWire restart, all devices will use 48kHz.
+
+**Manual Solution** (if needed): Force all devices to use 48kHz (professional standard):
 
 1. Create a PipeWire config file:
 ```bash

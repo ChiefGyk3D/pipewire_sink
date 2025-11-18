@@ -32,6 +32,44 @@ MODULE_ID_FILE="${HOME}/.local/state/reset_pipewire_combined_module_id"
 # Services we try to restart (some may not exist on every system)
 SERVICES=(pipewire.socket pipewire.service pipewire-pulse.service wireplumber.service)
 
+check_sample_rate_config() {
+    # Check if 48kHz sample rate config exists, offer to install if missing
+    local config_dir="${HOME}/.config/pipewire/pipewire.conf.d"
+    local config_file="${config_dir}/99-custom-rate.conf"
+    
+    # Check current sample rates
+    local mismatched=0
+    if command -v pactl >/dev/null 2>&1 && pactl info >/dev/null 2>&1; then
+        # Check if any sinks are not at 48000Hz
+        if pactl list short sinks 2>/dev/null | grep -v "48000Hz" | grep -qE "[0-9]+Hz"; then
+            mismatched=1
+        fi
+    fi
+    
+    # If config doesn't exist and we detected mismatched rates, create it
+    if [ ! -f "$config_file" ] && [ $mismatched -eq 1 ]; then
+        LOG "⚠️  Detected sample rate mismatch (not all devices at 48kHz)"
+        LOG "   This can cause pitch shifting with HDMI capture cards!"
+        LOG ""
+        LOG "Creating 48kHz sample rate config at: $config_file"
+        
+        mkdir -p "$config_dir"
+        cat > "$config_file" << 'EOF'
+# Force 48kHz sample rate for all devices to prevent pitch shifting
+# This is especially important for HDMI capture cards and mixed USB/PCI audio setups
+
+context.properties = {
+    default.clock.rate = 48000
+    default.clock.allowed-rates = [ 48000 ]
+}
+EOF
+        LOG "✓ Sample rate config created (will apply after PipeWire restart)"
+    elif [ ! -f "$config_file" ]; then
+        LOG "ℹ️  Tip: For best results, ensure all devices run at 48kHz"
+        LOG "   Sample rate config template available in examples/99-custom-rate.conf"
+    fi
+}
+
 reset_usb_audio_devices() {
     # Try to reset USB audio devices that might be in a stuck state
     # This requires usbreset utility or manual unbind/bind
@@ -299,6 +337,9 @@ main() {
   # Wait longer for sinks to appear after restart
   LOG "Waiting for audio sinks to become available..."
   sleep 3
+  
+  # Check and install sample rate config if needed (after restart so we can detect mismatches)
+  check_sample_rate_config
   
   # Restore analog profiles for USB devices (they often default to digital)
   restore_analog_profiles
