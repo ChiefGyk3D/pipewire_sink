@@ -71,8 +71,7 @@ EOF
 }
 
 reset_usb_audio_devices() {
-    # Try to reset USB audio devices that might be in a stuck state
-    # This requires usbreset utility or manual unbind/bind
+    # Reset USB audio devices using sysfs (no sudo required for script, sudo only for the reset)
     
     if [ "${RESET_USB:-}" != "1" ]; then
         return 0
@@ -80,29 +79,48 @@ reset_usb_audio_devices() {
     
     LOG "Attempting to reset USB audio devices..."
     
-    # Find USB audio devices
-    local usb_audio_devices
-    usb_audio_devices=$(lsusb | grep -iE 'audio|rode|behringer|focusrite|scarlett|presonus|m-audio' || true)
+    # Find USB audio devices by vendor/product ID
+    local found_devices=0
+    for device_path in /sys/bus/usb/devices/*; do
+        if [ ! -f "$device_path/idVendor" ]; then
+            continue
+        fi
+        
+        local vid=$(cat "$device_path/idVendor" 2>/dev/null || echo "")
+        local pid=$(cat "$device_path/idProduct" 2>/dev/null || echo "")
+        local product=$(cat "$device_path/product" 2>/dev/null || echo "unknown")
+        
+        # Check if this is an audio device (class 01 = Audio)
+        # Or match known audio device vendors
+        local is_audio=0
+        if grep -q "01" "$device_path/bDeviceClass" 2>/dev/null || \
+           grep -q "01" "$device_path"/*/bInterfaceClass 2>/dev/null || \
+           echo "$product" | grep -qiE 'audio|rode|behringer|focusrite|scarlett|presonus|m-audio'; then
+            is_audio=1
+        fi
+        
+        if [ $is_audio -eq 1 ]; then
+            found_devices=1
+            LOG "Resetting USB audio device: $product (${vid}:${pid})"
+            
+            # Reset via sysfs authorize (requires sudo)
+            if [ -w "$device_path/authorized" ] 2>/dev/null || sudo -n true 2>/dev/null; then
+                echo 0 | sudo tee "$device_path/authorized" >/dev/null 2>&1 || true
+                sleep 0.5
+                echo 1 | sudo tee "$device_path/authorized" >/dev/null 2>&1 || true
+                LOG "  Device reset via sysfs"
+            else
+                LOG "  Warning: No sudo access to reset device"
+            fi
+        fi
+    done
     
-    if [ -z "$usb_audio_devices" ]; then
+    if [ $found_devices -eq 0 ]; then
         LOG "No USB audio devices found to reset"
         return 0
     fi
     
-    # Try using usbreset if available
-    if command -v usbreset >/dev/null 2>&1; then
-        echo "$usb_audio_devices" | while read -r line; do
-            bus=$(echo "$line" | awk '{print $2}')
-            device=$(echo "$line" | awk '{print $4}' | tr -d ':')
-            device_name=$(echo "$line" | cut -d' ' -f7-)
-            LOG "Resetting USB device: $device_name (Bus $bus Device $device)"
-            sudo usbreset "/dev/bus/usb/$bus/$device" 2>&1 | head -5 || true
-        done
-        sleep 2
-    else
-        LOG "usbreset not available. To reset USB devices, install usbreset or use UNBIND_USB=1"
-        LOG "Install with: sudo apt install usbutils (Debian/Ubuntu) or compile from source"
-    fi
+    sleep 2
     
     return 0
 }
@@ -168,16 +186,26 @@ restore_analog_profiles() {
   # Wait for cards to be available
   sleep 1
   
-  # Get all cards and set USB devices to analog-stereo profile
+  # Get all cards and set USB devices to analog-stereo profile (preferring duplex if available)
   while IFS= read -r card_line; do
     card_name=$(echo "$card_line" | awk '{print $2}')
     
     # Check if it's a USB card
     if echo "$card_name" | grep -q "usb-"; then
-      # Check if analog-stereo profile is available
-      if pactl list cards 2>/dev/null | grep -A 50 "Name: $card_name" | grep -q "output:analog-stereo:"; then
-        LOG "  Setting $card_name to analog-stereo profile"
-        pactl set-card-profile "$card_name" output:analog-stereo 2>/dev/null || \
+      # Try to find best analog profile (preferring duplex with both analog input and output)
+      local best_profile=""
+      
+      # First choice: analog duplex (input+output both analog)
+      if pactl list cards 2>/dev/null | grep -A 50 "Name: $card_name" | grep -q "output:analog-stereo+input:analog-stereo:"; then
+        best_profile="output:analog-stereo+input:analog-stereo"
+      # Second choice: analog output only
+      elif pactl list cards 2>/dev/null | grep -A 50 "Name: $card_name" | grep -q "output:analog-stereo:"; then
+        best_profile="output:analog-stereo"
+      fi
+      
+      if [ -n "$best_profile" ]; then
+        LOG "  Setting $card_name to $best_profile profile"
+        pactl set-card-profile "$card_name" "$best_profile" 2>/dev/null || \
           LOG "  Warning: Could not set profile for $card_name"
       else
         LOG "  $card_name does not have analog-stereo profile, skipping"
@@ -313,8 +341,71 @@ load_combined() {
     (paplay -d "${SECONDARY_SINK}" /dev/zero --rate=48000 --channels=2 --format=s16le --volume=0 2>/dev/null &
      sleep 0.2
      pkill -P $$ paplay 2>/dev/null || true) || true
+
+    # Toggle HDMI card profile to force reinitialization (helps capture devices detect audio)
+    LOG "Toggling HDMI card profile to force reinit (avoids physical replug)..."
+    # Find the card index for the secondary sink
+    card_index=$(pactl list sinks 2>/dev/null | awk -v sink="${SECONDARY_SINK}" 'BEGIN{RS="\n\n"} $0~sink { if (match($0,/alsa.card = "?([0-9]+)"?/,m)) print m[1] }') || true
+    if [ -n "$card_index" ]; then
+      card_name=$(pactl list short cards 2>/dev/null | awk -v idx="$card_index" '$1==idx {print $2}') || true
+      if [ -n "$card_name" ]; then
+        # Try to choose a reasonable hdmi profile; fall back to the current active profile
+        preferred_profile=$(pactl list cards 2>/dev/null | awk -v name="$card_name" 'BEGIN{RS="\n\n"} $0~name { if (match($0,/output:[^\n]+hdmi[^:\n]*/i,m)) { gsub(/\n/,"",m[0]); gsub(/^[ \t]+/,"",m[0]); print m[0]; exit } }') || true
+        # Cleanup preferred_profile string (extract profile name)
+        if [ -n "$preferred_profile" ]; then
+          # preferred_profile might look like: output:hdmi-stereo-extra2: Digital Stereo (HDMI 3)
+          preferred_profile=$(echo "$preferred_profile" | awk -F ':' '{print $2}' | awk '{print $1}' ) || true
+        else
+          # fallback: use active profile
+          preferred_profile=$(pactl list cards 2>/dev/null | awk -v name="$card_name" 'BEGIN{RS="\n\n"} $0~name { if (match($0,/Active Profile: ([^\n]+)/,m)) print m[1] }') || true
+          preferred_profile=$(echo "$preferred_profile" | awk '{print $1}') || true
+        fi
+
+        if [ -n "$preferred_profile" ]; then
+          LOG "  Card: $card_name (index $card_index) -> toggling profile off -> $preferred_profile"
+          pactl set-card-profile "$card_name" off 2>/dev/null || true
+          sleep 0.25
+          pactl set-card-profile "$card_name" "$preferred_profile" 2>/dev/null || true
+        else
+          LOG "  Could not determine preferred profile for $card_name; skipping profile toggle"
+        fi
+      fi
+    else
+      LOG "  Could not find card index for sink ${SECONDARY_SINK}; skipping profile toggle"
+    fi
+    
+    # Also toggle USB audio device profile to ensure mixer/capture software can detect it
+    LOG "Toggling USB audio card profile to force detection by mixer software..."
+    usb_card_index=$(pactl list sinks 2>/dev/null | awk -v sink="${PRIMARY_SINK}" 'BEGIN{RS="\n\n"} $0~sink { if (match($0,/alsa.card = "?([0-9]+)"?/,m)) print m[1] }') || true
+    if [ -n "$usb_card_index" ]; then
+      usb_card_name=$(pactl list short cards 2>/dev/null | awk -v idx="$usb_card_index" '$1==idx {print $2}') || true
+      if [ -n "$usb_card_name" ] && echo "$usb_card_name" | grep -q "usb"; then
+        # Get current active profile
+        usb_active_profile=$(pactl list cards 2>/dev/null | awk -v name="$usb_card_name" 'BEGIN{RS="\n\n"} $0~name { if (match($0,/Active Profile: ([^\n]+)/,m)) print m[1] }') || true
+        usb_active_profile=$(echo "$usb_active_profile" | awk '{print $1}') || true
+        
+        if [ -n "$usb_active_profile" ] && [ "$usb_active_profile" != "off" ]; then
+          LOG "  USB Card: $usb_card_name (index $usb_card_index) -> toggling off -> $usb_active_profile"
+          pactl set-card-profile "$usb_card_name" off 2>/dev/null || true
+          sleep 0.5
+          pactl set-card-profile "$usb_card_name" "$usb_active_profile" 2>/dev/null || true
+          sleep 0.5
+        fi
+      fi
+    fi
     
     pactl set-default-sink "${COMBINED_SINK_NAME}" || LOG "Failed to set default sink (non-fatal)"
+    
+    # Set default input source to USB analog input if available
+    LOG "Setting default input source..."
+    usb_analog_source=$(pactl list short sources 2>/dev/null | grep "usb-.*analog-stereo" | grep "alsa_input" | awk '{print $2}' | head -1) || true
+    if [ -n "$usb_analog_source" ]; then
+      LOG "  Setting default source to: $usb_analog_source"
+      pactl set-default-source "$usb_analog_source" 2>/dev/null || LOG "  Warning: Could not set default source"
+    else
+      LOG "  No USB analog input source found, keeping current default"
+    fi
+    
     LOG "Combined sink configured and set as default"
   else
     LOG "Loaded module returned unexpected output: $out"

@@ -446,7 +446,36 @@ All devices will now run at 48kHz, preventing pitch shifting. You can verify wit
 ```bash
 pactl list short sinks  # Should show 48000Hz for all devices
 ```
-*Note: This requires the `usbreset` utility. Install with: `sudo apt install usbutils`*
+
+### After USB audio device firmware update
+
+**Problem**: After updating firmware on USB audio devices (RØDECaster, Scarlett, etc.), audio stops working, mixer can't detect device, or routing is broken.
+
+**Cause**: Firmware updates often change:
+- USB audio descriptors and how the device identifies itself
+- Available audio profiles, sample rates, and bit depths
+- Default output routing and channel mapping
+- Power management and suspend/resume behavior
+
+Linux/PipeWire caches device information, so after a major firmware update (e.g., RØDECaster Pro II 1.3.4 → 1.6.8), the cached info doesn't match the device's new behavior.
+
+**Solution**: Force complete USB device reset and PipeWire restart:
+```bash
+RESET_USB=1 reset-pipewire
+```
+
+This will:
+1. Physically reset the USB audio device (reauthorize via sysfs)
+2. Restart PipeWire services
+3. Toggle device card profiles to force re-enumeration
+4. Recreate combined sink with correct settings
+
+**If that doesn't work**, use the nuclear option:
+```bash
+sudo reset-pipewire-nuclear
+```
+
+**Best Practice**: After any USB audio device firmware update, always run `RESET_USB=1 reset-pipewire` to ensure clean re-detection.
 
 ## Advanced Configuration
 
