@@ -124,6 +124,30 @@ fallback_kill_and_cleanup() {
     done
 }
 
+restore_analog_profiles() {
+  LOG "Restoring analog profiles for USB audio devices..."
+  
+  # Wait for cards to be available
+  sleep 1
+  
+  # Get all cards and set USB devices to analog-stereo profile
+  while IFS= read -r card_line; do
+    card_name=$(echo "$card_line" | awk '{print $2}')
+    
+    # Check if it's a USB card
+    if echo "$card_name" | grep -q "usb-"; then
+      # Check if analog-stereo profile is available
+      if pactl list cards 2>/dev/null | grep -A 50 "Name: $card_name" | grep -q "output:analog-stereo:"; then
+        LOG "  Setting $card_name to analog-stereo profile"
+        pactl set-card-profile "$card_name" output:analog-stereo 2>/dev/null || \
+          LOG "  Warning: Could not set profile for $card_name"
+      else
+        LOG "  $card_name does not have analog-stereo profile, skipping"
+      fi
+    fi
+  done < <(pactl list short cards 2>/dev/null)
+}
+
 detect_sinks() {
   # Produce a list of sink names (second column), excluding dummy sinks
   sinks=( $(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -v "auto_null" | grep -v "dummy") )
@@ -217,7 +241,9 @@ load_combined() {
     sink_name="${COMBINED_SINK_NAME}" \
     sink_properties=device.description="${COMBINED_SINK_DESCRIPTION}" \
     slaves="${PRIMARY_SINK},${SECONDARY_SINK}" \
-    adjust_time=10 resample_method=copy 2>&1)
+    channels=2 \
+    rate=48000 \
+    adjust_time=10 resample_method=soxr-vhq 2>&1)
   rc=$?
   set -e
   if [ $rc -ne 0 ]; then
@@ -230,7 +256,28 @@ load_combined() {
     mkdir -p "$(dirname "${MODULE_ID_FILE}")"
     printf '%s' "$mid" > "${MODULE_ID_FILE}"
     LOG "Loaded combine module id=${mid} (saved to ${MODULE_ID_FILE})."
+    
+    # Set all slave sinks to 100% volume and unmute them
+    LOG "Setting slave sink volumes to 100%..."
+    pactl set-sink-volume "${PRIMARY_SINK}" 100% 2>/dev/null || LOG "  Warning: Could not set ${PRIMARY_SINK} volume"
+    pactl set-sink-mute "${PRIMARY_SINK}" 0 2>/dev/null || true
+    pactl set-sink-volume "${SECONDARY_SINK}" 100% 2>/dev/null || LOG "  Warning: Could not set ${SECONDARY_SINK} volume"
+    pactl set-sink-mute "${SECONDARY_SINK}" 0 2>/dev/null || true
+    
+    # Set combined sink to 100% volume
+    LOG "Setting combined sink volume to 100%..."
+    pactl set-sink-volume "${COMBINED_SINK_NAME}" 100% 2>/dev/null || LOG "  Warning: Could not set combined sink volume"
+    pactl set-sink-mute "${COMBINED_SINK_NAME}" 0 2>/dev/null || true
+    
+    # Activate the HDMI sink by playing a brief silent audio to wake it up
+    LOG "Activating HDMI sink..."
+    # Create a 0.1 second silent audio file and play it to the HDMI sink to activate it
+    (paplay -d "${SECONDARY_SINK}" /dev/zero --rate=48000 --channels=2 --format=s16le --volume=0 2>/dev/null &
+     sleep 0.2
+     pkill -P $$ paplay 2>/dev/null || true) || true
+    
     pactl set-default-sink "${COMBINED_SINK_NAME}" || LOG "Failed to set default sink (non-fatal)"
+    LOG "Combined sink configured and set as default"
   else
     LOG "Loaded module returned unexpected output: $out"
   fi
@@ -252,6 +299,9 @@ main() {
   # Wait longer for sinks to appear after restart
   LOG "Waiting for audio sinks to become available..."
   sleep 3
+  
+  # Restore analog profiles for USB devices (they often default to digital)
+  restore_analog_profiles
 
   # Retry sink detection a few times if needed
   local max_retries=10

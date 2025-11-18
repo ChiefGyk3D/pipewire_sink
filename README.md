@@ -399,6 +399,41 @@ AUTO_RESET_PIPEWIRE=0 sudo reset-usb-audio
 ```bash
 RESET_USB=1 reset-pipewire
 ```
+
+### Audio pitch is wrong / sounds sped up or slowed down
+
+**Problem**: Audio through HDMI capture card sounds higher or lower pitch than normal.
+
+**Cause**: Sample rate mismatch. Your devices are running at different sample rates (e.g., 44.1kHz vs 48kHz), causing pitch shifting when audio is resampled incorrectly.
+
+**Solution**: Force all devices to use 48kHz (professional standard):
+
+1. Create a PipeWire config file:
+```bash
+mkdir -p ~/.config/pipewire/pipewire.conf.d/
+cat > ~/.config/pipewire/pipewire.conf.d/99-custom-rate.conf << 'EOF'
+# Force 48kHz sample rate for all devices to prevent pitch shifting
+context.properties = {
+    default.clock.rate = 48000
+    default.clock.allowed-rates = [ 48000 ]
+}
+EOF
+```
+
+2. Restart PipeWire:
+```bash
+systemctl --user restart pipewire.service pipewire-pulse.service wireplumber.service
+```
+
+3. Recreate your combined sink:
+```bash
+reset-pipewire
+```
+
+All devices will now run at 48kHz, preventing pitch shifting. You can verify with:
+```bash
+pactl list short sinks  # Should show 48000Hz for all devices
+```
 *Note: This requires the `usbreset` utility. Install with: `sudo apt install usbutils`*
 
 ## Advanced Configuration
