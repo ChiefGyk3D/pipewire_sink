@@ -42,6 +42,17 @@ check_audio_health() {
         return 1
     fi
     
+    # Check if USB audio devices are responsive (try to read volume)
+    # If pactl hangs or fails on USB devices, they're likely stuck
+    local usb_sinks
+    usb_sinks=$(pactl list short sinks 2>/dev/null | grep "usb-.*analog-stereo" | awk '{print $2}' || true)
+    for sink in $usb_sinks; do
+        if ! timeout 2 pactl get-sink-volume "$sink" >/dev/null 2>&1; then
+            LOG "WARNING: USB sink $sink appears unresponsive (timeout or error)"
+            return 1
+        fi
+    done
+    
     # Check if default sink is valid
     local default_sink
     default_sink=$(pactl info 2>/dev/null | grep "Default Sink:" | awk '{print $3}')
@@ -77,18 +88,35 @@ main() {
                 
                 # Run the reset script
                 if [ -x "$HOME/.local/bin/reset-pipewire" ]; then
+                    # First try normal reset
                     "$HOME/.local/bin/reset-pipewire" 2>&1 | logger -t pipewire-watchdog
                     LOG "Reset completed, waiting for stabilization..."
                     sleep 10
                     
-                    # Check if reset worked
+                    # Check if reset worked (USB reset now enabled by default)
                     if check_audio_health; then
                         LOG "Reset successful, resetting failure counter"
                         failures=0
                     else
-                        LOG "WARNING: Reset didn't fully restore audio, will retry"
-                        failures=0  # Reset counter to try again
-                        sleep 30  # Wait longer before next attempt
+                        LOG "WARNING: Reset didn't fully restore audio, trying nuclear option..."
+                        # Try nuclear reset as last resort
+                        if [ -x "$HOME/.local/bin/reset-pipewire-nuclear" ]; then
+                            "$HOME/.local/bin/reset-pipewire-nuclear" 2>&1 | logger -t pipewire-watchdog
+                            sleep 10
+                            
+                            if check_audio_health; then
+                                LOG "Nuclear reset successful, resetting failure counter"
+                                failures=0
+                            else
+                                LOG "WARNING: Nuclear reset didn't fully restore audio, will retry"
+                                failures=0  # Reset counter to try again
+                                sleep 30  # Wait longer before next attempt
+                            fi
+                        else
+                            LOG "WARNING: Nuclear reset not available, will retry normal reset"
+                            failures=0
+                            sleep 30
+                        fi
                     fi
                 else
                     LOG "ERROR: reset-pipewire script not found or not executable"

@@ -67,26 +67,60 @@ This typically requires a full system reboot. **This script provides a reboot-fr
 
 ## Installation
 
+### Quick Install (Recommended)
+
+Interactive installer with device detection and configuration:
+
+```bash
+# Clone the repository
+git clone https://github.com/ChiefGyk3D/pipewire_sink.git
+cd pipewire_sink
+
+# Run the interactive installer
+./install.sh
+```
+
+The installer will:
+- ✅ Check dependencies
+- ✅ Detect and list your audio devices
+- ✅ Let you configure specific devices or use auto-detection
+- ✅ Configure USB reset behavior (always/never/manual)
+- ✅ Install all scripts and configs
+- ✅ Set up systemd services (optional)
+- ✅ Enable watchdog monitoring (optional)
+- ✅ Test the installation
+
+**USB Reset Options:**
+1. **Always reset** (Recommended): Automatically resets USB devices like physical unplug/replug. Best for devices like RØDECaster Pro II.
+2. **Never reset**: Skips USB reset. Use if you have stability issues with USB reset.
+3. **Manual control**: Only resets when you explicitly set `RESET_USB=1`
+
+### Manual Installation
+
 ```bash
 # Clone or download the script
 git clone https://github.com/ChiefGyk3D/pipewire_sink.git
 cd pipewire_sink
 
-# Make it executable
-chmod +x reset_pipewire.sh
-
-# Install helper scripts to your local bin
+# Install scripts
 mkdir -p ~/.local/bin
 cp reset_pipewire.sh ~/.local/bin/reset-pipewire
 cp examples/audio-status.sh ~/.local/bin/audio-status
 cp examples/reset-usb-audio.sh ~/.local/bin/reset-usb-audio
 cp examples/pipewire-watchdog.sh ~/.local/bin/pipewire-watchdog
-chmod +x ~/.local/bin/reset-pipewire ~/.local/bin/audio-status ~/.local/bin/reset-usb-audio ~/.local/bin/pipewire-watchdog
+cp examples/reset-pipewire-nuclear.sh ~/.local/bin/reset-pipewire-nuclear
+chmod +x ~/.local/bin/reset-pipewire ~/.local/bin/audio-status ~/.local/bin/reset-usb-audio ~/.local/bin/pipewire-watchdog ~/.local/bin/reset-pipewire-nuclear
 
-# (Optional) Install sample rate config to prevent pitch shifting
-# Note: reset-pipewire will auto-create this if it detects mismatched rates
+# Install sample rate config (prevents pitch shifting)
 mkdir -p ~/.config/pipewire/pipewire.conf.d/
 cp examples/99-custom-rate.conf ~/.config/pipewire/pipewire.conf.d/
+
+# (Optional) Enable systemd services
+mkdir -p ~/.config/systemd/user/
+cp examples/pipewire-combined.service ~/.config/systemd/user/
+cp examples/pipewire-watchdog.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now pipewire-combined.service pipewire-watchdog.service
 ```
 
 ## Usage
@@ -307,12 +341,36 @@ This script:
 - Check if PipeWire user services are enabled: `systemctl --user status pipewire pipewire-pulse wireplumber`
 - If services are masked or disabled, enable them: `systemctl --user enable --now pipewire pipewire-pulse wireplumber`
 
+### USB audio device shows as running but no sound
+
+**Problem**: PipeWire shows device in RUNNING state, correct profile, 100% volume, but no audio comes out of speakers/headphones.
+
+**Root cause**: Some USB audio devices (like RØDECaster Pro II firmware 1.6.8+) require a USB-level reset to properly reinitialize their internal audio routing. Just restarting PipeWire services isn't enough.
+
+**Solution**: The script now performs USB device reset by default (since v2.0). This mimics physically unplugging/replugging the USB cable.
+
+**Manual test**:
+```bash
+# Test if USB reset fixes your audio
+reset-usb-audio
+sleep 3
+reset-pipewire
+```
+
+If this works, the automatic reset is already enabled in `reset-pipewire`. To disable it:
+```bash
+RESET_USB=0 reset-pipewire
+```
+
+**How it works**: Uses Linux sysfs `authorized` file to deauthorize/reauthorize the USB device, triggering a full device reset without physical cable manipulation.
+
 ### Audio devices still disappear after using the script
 
 **Problem**: Script works temporarily but devices disappear again after hours/days.
 
 **Solutions**:
 - **Use the watchdog service** (see below) to automatically detect and fix issues
+- USB reset is now enabled by default to handle stuck devices
 - Run with `CLEAN_STATE=1 reset-pipewire` to force clean WirePlumber state files
 - Check for USB power management issues: `lsusb -t` to see if devices are suspending
 - Disable USB autosuspend for audio devices: Add to `/etc/udev/rules.d/50-usb-audio-powersave.rules`:
@@ -476,6 +534,46 @@ sudo reset-pipewire-nuclear
 ```
 
 **Best Practice**: After any USB audio device firmware update, always run `RESET_USB=1 reset-pipewire` to ensure clean re-detection.
+
+### Device shows as running but no audio / Mixer can't hear it
+
+**Problem**: After waking from suspend or after hours of use, your USB audio device (e.g., RØDECaster) appears to be working in PipeWire (shows RUNNING state) but:
+- No audio actually plays through it
+- Your mixer software can't detect/hear the audio
+- Would normally require physical unplug/replug to fix
+
+**Cause**: USB audio device enters a "stuck" state where:
+- PipeWire thinks it's working (responds to commands)
+- The device itself isn't actually processing audio
+- Firmware/hardware state needs reset
+
+**Automatic Solution**: The watchdog service detects this condition and auto-fixes it:
+- Checks device responsiveness every 30 seconds
+- After 3 consecutive failures (90 seconds), triggers automatic reset
+- First tries normal reset (profile toggle)
+- If that fails, automatically escalates to USB reset
+
+Ensure the watchdog is enabled:
+```bash
+systemctl --user enable --now pipewire-watchdog.service
+```
+
+**Manual Solution**: Force USB device reset immediately:
+```bash
+RESET_USB=1 reset-pipewire
+```
+
+This performs:
+1. USB device authorization reset (simulates unplug/replug via sysfs)
+2. PipeWire service restart
+3. Card profile toggle to force re-detection
+4. Combined sink recreation
+
+**Why this happens**: Common with professional USB audio interfaces after:
+- System suspend/resume
+- Extended runtime (hours of use)
+- Power management state changes
+- Firmware updates
 
 ## Advanced Configuration
 
