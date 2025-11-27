@@ -4,6 +4,14 @@ set -euo pipefail
 
 LOG() { logger -t pipewire-watchdog "$*"; }
 
+NOTIFY() {
+    # Send desktop notification if notify-send is available
+    if command -v notify-send >/dev/null 2>&1; then
+        DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}" \
+        notify-send -u critical -t 0 "PipeWire Audio Issue" "$*" 2>/dev/null || true
+    fi
+}
+
 CHECK_INTERVAL=30  # Check every 30 seconds
 MIN_SINKS=2        # Minimum number of hardware sinks expected
 
@@ -104,13 +112,18 @@ main() {
                             "$HOME/.local/bin/reset-pipewire-nuclear" 2>&1 | logger -t pipewire-watchdog
                             sleep 10
                             
+                            # Try one more reset-pipewire after nuclear
+                            "$HOME/.local/bin/reset-pipewire" 2>&1 | logger -t pipewire-watchdog
+                            sleep 5
+                            
                             if check_audio_health; then
                                 LOG "Nuclear reset successful, resetting failure counter"
                                 failures=0
                             else
-                                LOG "WARNING: Nuclear reset didn't fully restore audio, will retry"
-                                failures=0  # Reset counter to try again
-                                sleep 30  # Wait longer before next attempt
+                                LOG "CRITICAL: All automatic recovery attempts failed - manual USB replug required"
+                                NOTIFY "⚠️ Audio Stuck - Manual Fix Required\n\nPlease physically unplug and replug your USB audio device (RØDECaster).\n\nAutomatic recovery attempts have failed."
+                                failures=0  # Reset counter to avoid spam
+                                sleep 300  # Wait 5 minutes before checking again
                             fi
                         else
                             LOG "WARNING: Nuclear reset not available, will retry normal reset"

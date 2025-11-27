@@ -345,24 +345,37 @@ This script:
 
 **Problem**: PipeWire shows device in RUNNING state, correct profile, 100% volume, but no audio comes out of speakers/headphones.
 
-**Root cause**: Some USB audio devices (like RØDECaster Pro II firmware 1.6.8+) require a USB-level reset to properly reinitialize their internal audio routing. Just restarting PipeWire services isn't enough.
+**Root cause**: Some USB audio devices (particularly RØDECaster Pro II firmware 1.6.8+) enter a stuck state where their internal audio routing stops working. The device appears functional to Linux but no audio flows.
 
-**Solution**: The script now performs USB device reset by default (since v2.0). This mimics physically unplugging/replugging the USB cable.
+**Important limitation**: For some devices, **physical USB cable reconnection is required**. Software-based USB resets (sysfs authorize/deauthorize) and even kernel module reloads do not fully reset the device's internal firmware state.
 
-**Manual test**:
-```bash
-# Test if USB reset fixes your audio
-reset-usb-audio
-sleep 3
-reset-pipewire
-```
+**Solutions**:
 
-If this works, the automatic reset is already enabled in `reset-pipewire`. To disable it:
-```bash
-RESET_USB=0 reset-pipewire
-```
+1. **Physical reconnection** (Most reliable):
+   - Unplug the USB cable
+   - Wait 2-3 seconds
+   - Plug it back in
+   - Run `reset-pipewire` to recreate combined sink
 
-**How it works**: Uses Linux sysfs `authorized` file to deauthorize/reauthorize the USB device, triggering a full device reset without physical cable manipulation.
+2. **Try software resets first** (May work for some devices):
+   ```bash
+   # Try USB software reset
+   reset-usb-audio
+   sleep 3
+   reset-pipewire
+   
+   # If that doesn't work, try nuclear option
+   reset-pipewire-nuclear
+   reset-pipewire
+   ```
+
+3. **Automatic detection with notifications**:
+   - The watchdog service will detect stuck audio
+   - Attempts automatic recovery (reset-pipewire → nuclear reset)
+   - Sends desktop notification if manual USB replug is needed
+   - Check notifications when audio stops working
+
+**Why physical replug is sometimes required**: Some USB audio device firmware requires an actual electrical disconnection to reset internal state. This cannot be replicated through software alone, as the device needs to lose power completely.
 
 ### Audio devices still disappear after using the script
 

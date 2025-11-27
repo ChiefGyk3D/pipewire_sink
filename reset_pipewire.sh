@@ -17,7 +17,7 @@ LOG() { printf '%s %s\n' "$(date +'%F %T')" "$*"; }
 #
 # Environment variables:
 # - CLEAN_STATE=1: Force clean WirePlumber state files (use if devices won't appear)
-# - RESET_USB=0: Disable USB device reset (enabled by default for proper device initialization)
+# - RESET_USB=1: Enable USB device reset (disabled by default, requires sudo, may not fix all issues)
 # ============================================================================
 PRIMARY_SINK=""
 SECONDARY_SINK=""
@@ -71,11 +71,12 @@ EOF
 }
 
 reset_usb_audio_devices() {
-    # Reset USB audio devices using sysfs (no sudo required for script, sudo only for the reset)
-    # This is required for some devices (like RØDECaster Pro II) to properly reinitialize audio routing
+    # Reset USB audio devices using sysfs (requires sudo)
+    # NOTE: This doesn't actually fix RØDECaster stuck audio - physical replug required
+    # Disabled by default to avoid sudo prompts/hangs
     
-    # Default to enabled (can disable with RESET_USB=0)
-    if [ "${RESET_USB:-1}" != "1" ]; then
+    # Must explicitly enable with RESET_USB=1
+    if [ "${RESET_USB:-0}" != "1" ]; then
         return 0
     fi
     
@@ -366,7 +367,7 @@ load_combined() {
     fi
     
     # Re-applying volumes after profile operations to ensure they persist
-    LOG "Re-applying volumes to all sinks..."
+    LOG "Re-applying volumes to all sinks and sources..."
     sleep 1
     # Set all hardware sinks to 100%
     while IFS= read -r sink_name; do
@@ -378,6 +379,14 @@ load_combined() {
     # Set combined sink to 100%
     pactl set-sink-volume "${COMBINED_SINK_NAME}" 100% 2>/dev/null || true
     pactl set-sink-mute "${COMBINED_SINK_NAME}" 0 2>/dev/null || true
+    
+    # Set all input sources (microphones) to 100%
+    while IFS= read -r source_name; do
+      if [ -n "$source_name" ] && [[ ! "$source_name" =~ \.monitor$ ]]; then
+        pactl set-source-volume "$source_name" 100% 2>/dev/null || true
+        pactl set-source-mute "$source_name" 0 2>/dev/null || true
+      fi
+    done < <(pactl list short sources 2>/dev/null | awk '{print $2}' | grep "alsa_input")
     
     LOG "Combined sink configured and set as default"
   else
@@ -463,21 +472,50 @@ main() {
   if command -v pactl >/dev/null 2>&1; then
     default_sink=$(pactl info 2>/dev/null | grep "Default Sink:" | cut -d' ' -f3)
     if [ -n "$default_sink" ]; then
+      local moved_count=0
       pactl list short sink-inputs 2>/dev/null | while read -r input_id rest; do
-        pactl move-sink-input "$input_id" "$default_sink" 2>/dev/null || true
+        if pactl move-sink-input "$input_id" "$default_sink" 2>/dev/null; then
+          moved_count=$((moved_count + 1))
+        fi
       done
+      [ $moved_count -gt 0 ] && LOG "  Moved $moved_count audio stream(s) to new default sink"
     fi
   fi
   
   # Find and send SIGUSR1 to Firefox (tells it to reconnect audio)
-  pgrep -x firefox >/dev/null 2>&1 && pkill -SIGUSR1 firefox 2>/dev/null && LOG "  Signaled Firefox to reconnect audio" || true
+  if pgrep -x firefox >/dev/null 2>&1; then
+    pkill -SIGUSR1 firefox 2>/dev/null && LOG "  Signaled Firefox to reconnect audio"
+    LOG "  Note: Firefox may require reload/restart for audio to work"
+  fi
   
   # Chrome/Chromium usually auto-reconnect, but we can try
   pgrep -x chrome >/dev/null 2>&1 && LOG "  Chrome detected (usually auto-reconnects)" || true
   pgrep -x chromium >/dev/null 2>&1 && LOG "  Chromium detected (usually auto-reconnects)" || true
   
   LOG ""
-  LOG "If applications still have no audio, you may need to restart them manually."
+  LOG "If applications still have no audio:"
+  LOG "  - Firefox: Reload tab (Ctrl+R) or restart browser"
+  LOG "  - Chrome/Chromium: Usually auto-reconnects, try reloading tab"
+  LOG "  - Other apps: Restart the application"
+  
+  # Final volume enforcement - set everything to 100% one more time
+  LOG ""
+  LOG "Final volume enforcement (setting all devices to 100%)..."
+  sleep 1
+  while IFS= read -r sink_name; do
+    if [ -n "$sink_name" ]; then
+      pactl set-sink-volume "$sink_name" 100% 2>/dev/null || true
+      pactl set-sink-mute "$sink_name" 0 2>/dev/null || true
+    fi
+  done < <(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -v "auto_null\|dummy")
+  
+  while IFS= read -r source_name; do
+    if [ -n "$source_name" ] && [[ ! "$source_name" =~ \.monitor$ ]]; then
+      pactl set-source-volume "$source_name" 100% 2>/dev/null || true
+      pactl set-source-mute "$source_name" 0 2>/dev/null || true
+    fi
+  done < <(pactl list short sources 2>/dev/null | awk '{print $2}' | grep "alsa_input")
+  
   LOG ""
   LOG "=== reset_pipewire: done ==="
 }
