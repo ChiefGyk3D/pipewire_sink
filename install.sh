@@ -76,14 +76,15 @@ prompt_device_selection() {
     local prompt="$1"
     local default="$2"
     
-    echo "$prompt"
-    echo "Options:"
-    echo "  - Enter sink name (e.g., alsa_output.usb-Device.analog-stereo)"
-    echo "  - Enter number from list above"
-    echo "  - Press Enter for auto-detection"
-    echo -n "Selection [auto]: "
+    # Send prompts to stderr so they're not captured by $()
+    echo "$prompt" >&2
+    echo "Options:" >&2
+    echo "  - Enter sink name (e.g., alsa_output.usb-Device.analog-stereo)" >&2
+    echo "  - Enter number from list above" >&2
+    echo "  - Press Enter for auto-detection" >&2
+    echo -n "Selection [auto]: " >&2
     
-    read -r selection
+    read -r selection </dev/tty
     
     if [ -z "$selection" ]; then
         echo "auto"
@@ -98,7 +99,7 @@ prompt_device_selection() {
         if [ -n "$sink" ]; then
             echo "$sink"
         else
-            error "Invalid selection: $selection"
+            echo "Invalid selection: $selection" >&2
             echo "auto"
         fi
     else
@@ -279,7 +280,71 @@ update_reset_script_config() {
             esac
         fi
         
+        # Update exclusion patterns if configured
+        if [ -n "$EXCLUDE_PATTERNS_STR" ]; then
+            sed -i "s|^EXCLUDE_PATTERNS=.*|EXCLUDE_PATTERNS=($EXCLUDE_PATTERNS_STR)|" "$INSTALL_DIR/reset-pipewire"
+            
+            # Also update nuclear reset and watchdog
+            if [ -f "$INSTALL_DIR/reset-pipewire-nuclear" ]; then
+                sed -i "s|^EXCLUDE_PATTERNS=.*|EXCLUDE_PATTERNS=($EXCLUDE_PATTERNS_STR)|" "$INSTALL_DIR/reset-pipewire-nuclear"
+            fi
+            if [ -f "$INSTALL_DIR/pipewire-watchdog" ]; then
+                sed -i "s|^EXCLUDE_PATTERNS=.*|EXCLUDE_PATTERNS=($EXCLUDE_PATTERNS_STR)|" "$INSTALL_DIR/pipewire-watchdog"
+            fi
+        fi
+        
         success "Configured reset-pipewire"
+    fi
+}
+
+configure_device_exclusions() {
+    echo ""
+    info "Device Exclusion Configuration"
+    echo "════════════════════════════════════════════════════════"
+    echo ""
+    echo "You can exclude specific audio devices from the combined sink."
+    echo "Excluded devices will be completely disabled (profile set to 'off')."
+    echo "This is useful for USB devices you don't want audio going to,"
+    echo "like USB clocks with speakers, USB hubs with audio, etc."
+    echo ""
+    
+    # Show available devices
+    echo "Current audio devices:"
+    echo "─────────────────────────────────────────────────────"
+    pactl list short sinks 2>/dev/null | grep "alsa_output" | nl -w2 -s". " || true
+    echo ""
+    
+    echo -n "Do you want to exclude any devices? [y/N]: "
+    read -r exclude_devices
+    
+    EXCLUDE_PATTERNS_STR=""
+    
+    if [[ "$exclude_devices" =~ ^[Yy] ]]; then
+        echo ""
+        echo "Enter device patterns to exclude (partial names work)."
+        echo "Common examples:"
+        echo "  - Jieli_Technology  (USB clock speakers)"
+        echo "  - USB_Speaker       (generic USB speakers)"
+        echo ""
+        echo "Enter patterns one per line. Press Enter on empty line when done:"
+        
+        local patterns=()
+        while true; do
+            echo -n "Pattern: "
+            read -r pattern </dev/tty
+            if [ -z "$pattern" ]; then
+                break
+            fi
+            patterns+=("\"$pattern\"")
+            info "Added exclusion: $pattern"
+        done
+        
+        if [ ${#patterns[@]} -gt 0 ]; then
+            EXCLUDE_PATTERNS_STR=$(IFS=" "; echo "${patterns[*]}")
+            success "Configured ${#patterns[@]} exclusion pattern(s)"
+        fi
+    else
+        info "No device exclusions configured"
     fi
 }
 
@@ -322,6 +387,10 @@ print_summary() {
     fi
     echo "  CLEAN_STATE=1 reset-pipewire     - Clean WirePlumber state"
     echo ""
+    if [ -n "$EXCLUDE_PATTERNS_STR" ]; then
+        info "Device exclusions configured: $EXCLUDE_PATTERNS_STR"
+        echo ""
+    fi
     info "For help and troubleshooting, see:"
     echo "  ${SCRIPT_DIR}/README.md"
     echo ""
@@ -359,6 +428,7 @@ main() {
     install_scripts
     install_sample_rate_config
     configure_reset_behavior
+    configure_device_exclusions
     update_reset_script_config
     configure_systemd_services
     test_installation

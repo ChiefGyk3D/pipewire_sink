@@ -3,11 +3,13 @@
 
 [Unit]
 Description=PipeWire Audio Watchdog
-After=pipewire.service wireplumber.service
+After=pipewire.service wireplumber.service pipewire-combined.service
 Requires=pipewire.service
 
 [Service]
 Type=simple
+# Wait 60 seconds after boot before starting watchdog to let audio fully initialize
+ExecStartPre=/bin/sleep 60
 ExecStart=%h/.local/bin/pipewire-watchdog
 Restart=always
 RestartSec=10

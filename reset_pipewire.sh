@@ -26,6 +26,13 @@ SECONDARY_SINK=""
 COMBINED_SINK_NAME="combined_out"
 COMBINED_SINK_DESCRIPTION="Combined Audio Output"
 
+# Exclude specific devices from combined sink by matching patterns
+# Add partial sink names, device IDs, or keywords to exclude
+# Example: EXCLUDE_PATTERNS=("clock" "USB_Speaker_Clock" "dummy")
+# To exclude your USB clock speaker, add patterns below:
+# Common patterns: "Jieli_Technology", "USB_Speaker", etc.
+EXCLUDE_PATTERNS=()
+
 STATE_DIR="${XDG_RUNTIME_DIR:-/run/user/${UID}}"
 MODULE_ID_FILE="${HOME}/.local/state/reset_pipewire_combined_module_id"
 
@@ -230,11 +237,56 @@ restore_analog_profiles() {
   sleep 1
 }
 
+disable_excluded_devices() {
+  # Disable excluded devices by setting their card profile to "off"
+  # This prevents PipeWire from creating sinks for them at all
+  if [ ${#EXCLUDE_PATTERNS[@]} -eq 0 ]; then
+    return
+  fi
+  
+  LOG "Disabling excluded audio devices..."
+  while IFS= read -r card_name; do
+    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+      if [[ "$card_name" == *"$pattern"* ]]; then
+        LOG "  Disabling card '$card_name' (matches pattern '$pattern')"
+        pactl set-card-profile "$card_name" off 2>/dev/null || true
+        
+        # Save to WirePlumber state so it persists
+        local profile_file="${HOME}/.local/state/wireplumber/default-profile"
+        if [ -f "$profile_file" ]; then
+          sed -i "/^$card_name=/d" "$profile_file" 2>/dev/null || true
+          echo "$card_name=off" >> "$profile_file"
+        fi
+        break
+      fi
+    done
+  done < <(pactl list short cards 2>/dev/null | awk '{print $2}')
+  
+  sleep 1
+}
+
 detect_sinks() {
   # Produce a list of sink names (second column), excluding dummy sinks
-  sinks=( $(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -v "auto_null" | grep -v "dummy") )
+  local all_sinks=( $(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -v "auto_null" | grep -v "dummy") )
+  
+  # Filter out excluded patterns
+  sinks=()
+  for sink in "${all_sinks[@]}"; do
+    local excluded=0
+    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+      if [[ "$sink" == *"$pattern"* ]]; then
+        LOG "Excluding sink '$sink' (matches pattern '$pattern')"
+        excluded=1
+        break
+      fi
+    done
+    if [ $excluded -eq 0 ]; then
+      sinks+=("$sink")
+    fi
+  done
+  
   if [ ${#sinks[@]} -eq 0 ]; then
-    LOG "No real sinks detected by pactl (excluding dummy/null sinks)."
+    LOG "No real sinks detected by pactl (excluding dummy/null/excluded sinks)."
     return 1
   fi
 
@@ -376,6 +428,26 @@ load_combined() {
         pactl set-sink-mute "$sink_name" 0 2>/dev/null || true
       fi
     done < <(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -v "auto_null\|dummy")
+    
+    # Extra pass for HDMI devices (they can initialize slowly)
+    while IFS= read -r sink_name; do
+      if [ -n "$sink_name" ]; then
+        pactl set-sink-volume "$sink_name" 100% 2>/dev/null || true
+        pactl set-sink-mute "$sink_name" 0 2>/dev/null || true
+      fi
+    done < <(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -i "hdmi")
+    
+    # Mute excluded devices (workaround for PipeWire combine-sink bug)
+    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+      while IFS= read -r sink_name; do
+        if [ -n "$sink_name" ] && [[ "$sink_name" == *"$pattern"* ]]; then
+          LOG "  Muting excluded device: $sink_name"
+          pactl set-sink-mute "$sink_name" 1 2>/dev/null || true
+          pactl set-sink-volume "$sink_name" 0% 2>/dev/null || true
+        fi
+      done < <(pactl list short sinks 2>/dev/null | awk '{print $2}')
+    done
+    
     # Set combined sink to 100%
     pactl set-sink-volume "${COMBINED_SINK_NAME}" 100% 2>/dev/null || true
     pactl set-sink-mute "${COMBINED_SINK_NAME}" 0 2>/dev/null || true
@@ -416,6 +488,9 @@ main() {
   
   # Restore analog profiles for USB devices (they often default to digital)
   restore_analog_profiles
+  
+  # Disable excluded devices completely (prevents PipeWire from creating sinks)
+  disable_excluded_devices
 
   # Retry sink detection a few times if needed
   local max_retries=10
@@ -499,15 +574,45 @@ main() {
   LOG "  - Other apps: Restart the application"
   
   # Final volume enforcement - set everything to 100% one more time
+  # Wait a bit longer for HDMI devices which can be slow to initialize
   LOG ""
   LOG "Final volume enforcement (setting all devices to 100%)..."
+  sleep 2
+  
+  # Helper to check exclusions
+  is_excluded() {
+    local sink="$1"
+    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+      if [[ "$sink" == *"$pattern"* ]]; then
+        return 0  # Excluded
+      fi
+    done
+    return 1  # Not excluded
+  }
+  
+  # First pass - all sinks (respecting exclusions)
+  while IFS= read -r sink_name; do
+    if [ -n "$sink_name" ]; then
+      if is_excluded "$sink_name"; then
+        LOG "  Muting excluded device: $sink_name"
+        pactl set-sink-mute "$sink_name" 1 2>/dev/null || true
+        pactl set-sink-volume "$sink_name" 0% 2>/dev/null || true
+      else
+        pactl set-sink-volume "$sink_name" 100% 2>/dev/null || true
+        pactl set-sink-mute "$sink_name" 0 2>/dev/null || true
+      fi
+    fi
+  done < <(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -v "auto_null\|dummy")
+  
+  # Second pass specifically for HDMI devices (they can be slow)
   sleep 1
   while IFS= read -r sink_name; do
     if [ -n "$sink_name" ]; then
+      LOG "  Setting HDMI device $sink_name to 100%"
       pactl set-sink-volume "$sink_name" 100% 2>/dev/null || true
       pactl set-sink-mute "$sink_name" 0 2>/dev/null || true
     fi
-  done < <(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -v "auto_null\|dummy")
+  done < <(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -i "hdmi")
   
   while IFS= read -r source_name; do
     if [ -n "$source_name" ] && [[ ! "$source_name" =~ \.monitor$ ]]; then

@@ -195,6 +195,39 @@ RESET_USB=1 ./reset_pipewire.sh
 ```
 *Note: Requires `usbreset` utility. Install on Ubuntu/Debian: `sudo apt install usbutils`*
 
+### Device Exclusions
+
+You can exclude specific audio devices from the combined sink. Excluded devices will be completely disabled (profile set to "off"), preventing PipeWire from routing audio to them. This is useful for:
+
+- **USB clocks/gadgets** with built-in speakers you don't want audio going to
+- **USB hubs** that expose audio devices
+- **Secondary devices** you only want to use manually
+
+**Configure via install script:**
+```bash
+./install.sh
+# Select "Yes" when asked about device exclusions
+```
+
+**Or manually edit the scripts** (`~/.local/bin/reset-pipewire`, `reset-pipewire-nuclear`, `pipewire-watchdog`):
+```bash
+# Near the top of each script, find and modify:
+EXCLUDE_PATTERNS=("Jieli_Technology" "USB_Speaker_Clock")
+```
+
+**How it works:**
+1. Matching devices have their card profile set to "off" (completely disabled)
+2. The preference is saved to WirePlumber state (persists across reboots)
+3. No audio will route to excluded devices
+4. You can still manually enable them in your system audio settings if needed
+
+**Common exclusion patterns:**
+| Device Type | Pattern |
+|-------------|---------|
+| USB clock speakers | `Jieli_Technology` |
+| Generic USB speakers | `USB_Speaker` |
+| USB hubs with audio | `Hub_Audio` |
+
 ## Verification
 
 After running the script, verify it worked:
