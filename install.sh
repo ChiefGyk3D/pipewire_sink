@@ -177,6 +177,21 @@ install_sample_rate_config() {
     fi
 }
 
+install_no_suspend_config() {
+    info "Installing audio power-save disable configuration..."
+    
+    local WIREPLUMBER_CONF_DIR="${CONFIG_DIR}/wireplumber/wireplumber.conf.d"
+    mkdir -p "$WIREPLUMBER_CONF_DIR"
+    
+    if [ -f "$SCRIPT_DIR/examples/50-no-suspend.conf" ]; then
+        cp "$SCRIPT_DIR/examples/50-no-suspend.conf" "$WIREPLUMBER_CONF_DIR/"
+        success "Installed no-suspend config (prevents audio popping)"
+        info "Audio devices will stay active instead of entering power-save mode"
+    else
+        warning "No-suspend config not found, skipping"
+    fi
+}
+
 configure_systemd_services() {
     echo ""
     info "Systemd Service Configuration"
@@ -370,6 +385,7 @@ print_summary() {
     echo ""
     success "Installed scripts to: $INSTALL_DIR"
     success "Installed configs to: $CONFIG_DIR"
+    success "Audio power-save disabled (no more audio pop on playback start)"
     echo ""
     info "Available commands:"
     echo "  reset-pipewire          - Reset PipeWire and create combined sink"
@@ -427,6 +443,7 @@ main() {
     echo ""
     install_scripts
     install_sample_rate_config
+    install_no_suspend_config
     configure_reset_behavior
     configure_device_exclusions
     update_reset_script_config

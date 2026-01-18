@@ -57,6 +57,7 @@ This typically requires a full system reboot. **This script provides a reboot-fr
 - ✅ **Status checker**: Quick audio-status command for system overview
 - ✅ **Nuclear option**: Aggressive fallback with kernel module reload for severe failures
 - ✅ **Sample rate management**: Auto-detects and fixes sample rate mismatches to prevent pitch shifting
+- ✅ **Audio power-save disable**: Prevents audio "popping" at playback start by keeping devices active
 
 ## Requirements
 
@@ -114,6 +115,10 @@ chmod +x ~/.local/bin/reset-pipewire ~/.local/bin/audio-status ~/.local/bin/rese
 # Install sample rate config (prevents pitch shifting)
 mkdir -p ~/.config/pipewire/pipewire.conf.d/
 cp examples/99-custom-rate.conf ~/.config/pipewire/pipewire.conf.d/
+
+# Install no-suspend config (prevents audio popping at playback start)
+mkdir -p ~/.config/wireplumber/wireplumber.conf.d/
+cp examples/50-no-suspend.conf ~/.config/wireplumber/wireplumber.conf.d/
 
 # (Optional) Enable systemd services
 mkdir -p ~/.config/systemd/user/
@@ -262,6 +267,30 @@ PipeWire shows different states for audio devices:
 - **ERROR** - Device has an error and needs attention
 
 **SUSPENDED is normal!** It's PipeWire's power-saving feature. Devices in SUSPENDED state will instantly wake up when audio plays. If you see SUSPENDED, your audio is working correctly.
+
+### Audio Power-Save and Popping Prevention
+
+If you hear a "pop" or "click" sound at the start of audio playback, this is caused by your audio device waking from power-save mode. The installer automatically configures WirePlumber to prevent this by keeping audio devices active.
+
+**How it works:**
+The `50-no-suspend.conf` configuration sets `session.suspend-timeout-seconds = 0` for all ALSA devices, preventing them from entering suspend/power-save mode.
+
+**Location:** `~/.config/wireplumber/wireplumber.conf.d/50-no-suspend.conf`
+
+**Manual installation:**
+```bash
+mkdir -p ~/.config/wireplumber/wireplumber.conf.d/
+cp examples/50-no-suspend.conf ~/.config/wireplumber/wireplumber.conf.d/
+systemctl --user restart wireplumber
+```
+
+**Verify it's working:**
+```bash
+wpctl inspect <device-id> | grep pause-on-idle
+# Should show: node.pause-on-idle = "false"
+```
+
+This is especially useful for USB audio interfaces like the RØDECaster Pro II, Focusrite Scarlett, and other professional audio devices where the pop can be disruptive during recording or streaming.
 
 ### After Running the Script
 
