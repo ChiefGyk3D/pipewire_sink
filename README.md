@@ -57,6 +57,7 @@ This typically requires a full system reboot. **This script provides a reboot-fr
 - ✅ **Status checker**: Quick audio-status command for system overview
 - ✅ **Nuclear option**: Aggressive fallback with kernel module reload for severe failures
 - ✅ **Sample rate management**: Auto-detects and fixes sample rate mismatches to prevent pitch shifting
+- ✅ **Audio power-save disable**: Prevents audio "popping" at playback start by keeping devices active
 
 ## Requirements
 
@@ -67,26 +68,64 @@ This typically requires a full system reboot. **This script provides a reboot-fr
 
 ## Installation
 
+### Quick Install (Recommended)
+
+Interactive installer with device detection and configuration:
+
+```bash
+# Clone the repository
+git clone https://github.com/ChiefGyk3D/pipewire_sink.git
+cd pipewire_sink
+
+# Run the interactive installer
+./install.sh
+```
+
+The installer will:
+- ✅ Check dependencies
+- ✅ Detect and list your audio devices
+- ✅ Let you configure specific devices or use auto-detection
+- ✅ Configure USB reset behavior (always/never/manual)
+- ✅ Install all scripts and configs
+- ✅ Set up systemd services (optional)
+- ✅ Enable watchdog monitoring (optional)
+- ✅ Test the installation
+
+**USB Reset Options:**
+1. **Always reset** (Recommended): Automatically resets USB devices like physical unplug/replug. Best for devices like RØDECaster Pro II.
+2. **Never reset**: Skips USB reset. Use if you have stability issues with USB reset.
+3. **Manual control**: Only resets when you explicitly set `RESET_USB=1`
+
+### Manual Installation
+
 ```bash
 # Clone or download the script
 git clone https://github.com/ChiefGyk3D/pipewire_sink.git
 cd pipewire_sink
 
-# Make it executable
-chmod +x reset_pipewire.sh
-
-# Install helper scripts to your local bin
+# Install scripts
 mkdir -p ~/.local/bin
 cp reset_pipewire.sh ~/.local/bin/reset-pipewire
 cp examples/audio-status.sh ~/.local/bin/audio-status
 cp examples/reset-usb-audio.sh ~/.local/bin/reset-usb-audio
 cp examples/pipewire-watchdog.sh ~/.local/bin/pipewire-watchdog
-chmod +x ~/.local/bin/reset-pipewire ~/.local/bin/audio-status ~/.local/bin/reset-usb-audio ~/.local/bin/pipewire-watchdog
+cp examples/reset-pipewire-nuclear.sh ~/.local/bin/reset-pipewire-nuclear
+chmod +x ~/.local/bin/reset-pipewire ~/.local/bin/audio-status ~/.local/bin/reset-usb-audio ~/.local/bin/pipewire-watchdog ~/.local/bin/reset-pipewire-nuclear
 
-# (Optional) Install sample rate config to prevent pitch shifting
-# Note: reset-pipewire will auto-create this if it detects mismatched rates
+# Install sample rate config (prevents pitch shifting)
 mkdir -p ~/.config/pipewire/pipewire.conf.d/
 cp examples/99-custom-rate.conf ~/.config/pipewire/pipewire.conf.d/
+
+# Install no-suspend config (prevents audio popping at playback start)
+mkdir -p ~/.config/wireplumber/wireplumber.conf.d/
+cp examples/50-no-suspend.conf ~/.config/wireplumber/wireplumber.conf.d/
+
+# (Optional) Enable systemd services
+mkdir -p ~/.config/systemd/user/
+cp examples/pipewire-combined.service ~/.config/systemd/user/
+cp examples/pipewire-watchdog.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now pipewire-combined.service pipewire-watchdog.service
 ```
 
 ## Usage
@@ -161,6 +200,39 @@ RESET_USB=1 ./reset_pipewire.sh
 ```
 *Note: Requires `usbreset` utility. Install on Ubuntu/Debian: `sudo apt install usbutils`*
 
+### Device Exclusions
+
+You can exclude specific audio devices from the combined sink. Excluded devices will be completely disabled (profile set to "off"), preventing PipeWire from routing audio to them. This is useful for:
+
+- **USB clocks/gadgets** with built-in speakers you don't want audio going to
+- **USB hubs** that expose audio devices
+- **Secondary devices** you only want to use manually
+
+**Configure via install script:**
+```bash
+./install.sh
+# Select "Yes" when asked about device exclusions
+```
+
+**Or manually edit the scripts** (`~/.local/bin/reset-pipewire`, `reset-pipewire-nuclear`, `pipewire-watchdog`):
+```bash
+# Near the top of each script, find and modify:
+EXCLUDE_PATTERNS=("Jieli_Technology" "USB_Speaker_Clock")
+```
+
+**How it works:**
+1. Matching devices have their card profile set to "off" (completely disabled)
+2. The preference is saved to WirePlumber state (persists across reboots)
+3. No audio will route to excluded devices
+4. You can still manually enable them in your system audio settings if needed
+
+**Common exclusion patterns:**
+| Device Type | Pattern |
+|-------------|---------|
+| USB clock speakers | `Jieli_Technology` |
+| Generic USB speakers | `USB_Speaker` |
+| USB hubs with audio | `Hub_Audio` |
+
 ## Verification
 
 After running the script, verify it worked:
@@ -195,6 +267,30 @@ PipeWire shows different states for audio devices:
 - **ERROR** - Device has an error and needs attention
 
 **SUSPENDED is normal!** It's PipeWire's power-saving feature. Devices in SUSPENDED state will instantly wake up when audio plays. If you see SUSPENDED, your audio is working correctly.
+
+### Audio Power-Save and Popping Prevention
+
+If you hear a "pop" or "click" sound at the start of audio playback, this is caused by your audio device waking from power-save mode. The installer automatically configures WirePlumber to prevent this by keeping audio devices active.
+
+**How it works:**
+The `50-no-suspend.conf` configuration sets `session.suspend-timeout-seconds = 0` for all ALSA devices, preventing them from entering suspend/power-save mode.
+
+**Location:** `~/.config/wireplumber/wireplumber.conf.d/50-no-suspend.conf`
+
+**Manual installation:**
+```bash
+mkdir -p ~/.config/wireplumber/wireplumber.conf.d/
+cp examples/50-no-suspend.conf ~/.config/wireplumber/wireplumber.conf.d/
+systemctl --user restart wireplumber
+```
+
+**Verify it's working:**
+```bash
+wpctl inspect <device-id> | grep pause-on-idle
+# Should show: node.pause-on-idle = "false"
+```
+
+This is especially useful for USB audio interfaces like the RØDECaster Pro II, Focusrite Scarlett, and other professional audio devices where the pop can be disruptive during recording or streaming.
 
 ### After Running the Script
 
@@ -307,12 +403,49 @@ This script:
 - Check if PipeWire user services are enabled: `systemctl --user status pipewire pipewire-pulse wireplumber`
 - If services are masked or disabled, enable them: `systemctl --user enable --now pipewire pipewire-pulse wireplumber`
 
+### USB audio device shows as running but no sound
+
+**Problem**: PipeWire shows device in RUNNING state, correct profile, 100% volume, but no audio comes out of speakers/headphones.
+
+**Root cause**: Some USB audio devices (particularly RØDECaster Pro II firmware 1.6.8+) enter a stuck state where their internal audio routing stops working. The device appears functional to Linux but no audio flows.
+
+**Important limitation**: For some devices, **physical USB cable reconnection is required**. Software-based USB resets (sysfs authorize/deauthorize) and even kernel module reloads do not fully reset the device's internal firmware state.
+
+**Solutions**:
+
+1. **Physical reconnection** (Most reliable):
+   - Unplug the USB cable
+   - Wait 2-3 seconds
+   - Plug it back in
+   - Run `reset-pipewire` to recreate combined sink
+
+2. **Try software resets first** (May work for some devices):
+   ```bash
+   # Try USB software reset
+   reset-usb-audio
+   sleep 3
+   reset-pipewire
+   
+   # If that doesn't work, try nuclear option
+   reset-pipewire-nuclear
+   reset-pipewire
+   ```
+
+3. **Automatic detection with notifications**:
+   - The watchdog service will detect stuck audio
+   - Attempts automatic recovery (reset-pipewire → nuclear reset)
+   - Sends desktop notification if manual USB replug is needed
+   - Check notifications when audio stops working
+
+**Why physical replug is sometimes required**: Some USB audio device firmware requires an actual electrical disconnection to reset internal state. This cannot be replicated through software alone, as the device needs to lose power completely.
+
 ### Audio devices still disappear after using the script
 
 **Problem**: Script works temporarily but devices disappear again after hours/days.
 
 **Solutions**:
 - **Use the watchdog service** (see below) to automatically detect and fix issues
+- USB reset is now enabled by default to handle stuck devices
 - Run with `CLEAN_STATE=1 reset-pipewire` to force clean WirePlumber state files
 - Check for USB power management issues: `lsusb -t` to see if devices are suspending
 - Disable USB autosuspend for audio devices: Add to `/etc/udev/rules.d/50-usb-audio-powersave.rules`:
@@ -476,6 +609,46 @@ sudo reset-pipewire-nuclear
 ```
 
 **Best Practice**: After any USB audio device firmware update, always run `RESET_USB=1 reset-pipewire` to ensure clean re-detection.
+
+### Device shows as running but no audio / Mixer can't hear it
+
+**Problem**: After waking from suspend or after hours of use, your USB audio device (e.g., RØDECaster) appears to be working in PipeWire (shows RUNNING state) but:
+- No audio actually plays through it
+- Your mixer software can't detect/hear the audio
+- Would normally require physical unplug/replug to fix
+
+**Cause**: USB audio device enters a "stuck" state where:
+- PipeWire thinks it's working (responds to commands)
+- The device itself isn't actually processing audio
+- Firmware/hardware state needs reset
+
+**Automatic Solution**: The watchdog service detects this condition and auto-fixes it:
+- Checks device responsiveness every 30 seconds
+- After 3 consecutive failures (90 seconds), triggers automatic reset
+- First tries normal reset (profile toggle)
+- If that fails, automatically escalates to USB reset
+
+Ensure the watchdog is enabled:
+```bash
+systemctl --user enable --now pipewire-watchdog.service
+```
+
+**Manual Solution**: Force USB device reset immediately:
+```bash
+RESET_USB=1 reset-pipewire
+```
+
+This performs:
+1. USB device authorization reset (simulates unplug/replug via sysfs)
+2. PipeWire service restart
+3. Card profile toggle to force re-detection
+4. Combined sink recreation
+
+**Why this happens**: Common with professional USB audio interfaces after:
+- System suspend/resume
+- Extended runtime (hours of use)
+- Power management state changes
+- Firmware updates
 
 ## Advanced Configuration
 

@@ -17,7 +17,7 @@ LOG() { printf '%s %s\n' "$(date +'%F %T')" "$*"; }
 #
 # Environment variables:
 # - CLEAN_STATE=1: Force clean WirePlumber state files (use if devices won't appear)
-# - RESET_USB=1: Reset USB audio devices before restarting PipeWire (requires usbreset)
+# - RESET_USB=1: Enable USB device reset (disabled by default, requires sudo, may not fix all issues)
 # ============================================================================
 PRIMARY_SINK=""
 SECONDARY_SINK=""
@@ -25,6 +25,13 @@ SECONDARY_SINK=""
 # Combined sink name and description (visible in audio settings)
 COMBINED_SINK_NAME="combined_out"
 COMBINED_SINK_DESCRIPTION="Combined Audio Output"
+
+# Exclude specific devices from combined sink by matching patterns
+# Add partial sink names, device IDs, or keywords to exclude
+# Example: EXCLUDE_PATTERNS=("clock" "USB_Speaker_Clock" "dummy")
+# To exclude your USB clock speaker, add patterns below:
+# Common patterns: "Jieli_Technology", "USB_Speaker", etc.
+EXCLUDE_PATTERNS=()
 
 STATE_DIR="${XDG_RUNTIME_DIR:-/run/user/${UID}}"
 MODULE_ID_FILE="${HOME}/.local/state/reset_pipewire_combined_module_id"
@@ -71,13 +78,16 @@ EOF
 }
 
 reset_usb_audio_devices() {
-    # Reset USB audio devices using sysfs (no sudo required for script, sudo only for the reset)
+    # Reset USB audio devices using sysfs (requires sudo)
+    # NOTE: This doesn't actually fix RØDECaster stuck audio - physical replug required
+    # Disabled by default to avoid sudo prompts/hangs
     
-    if [ "${RESET_USB:-}" != "1" ]; then
+    # Must explicitly enable with RESET_USB=1
+    if [ "${RESET_USB:-0}" != "1" ]; then
         return 0
     fi
     
-    LOG "Attempting to reset USB audio devices..."
+    LOG "Resetting USB audio devices..."
     
     # Find USB audio devices by vendor/product ID
     local found_devices=0
@@ -207,18 +217,76 @@ restore_analog_profiles() {
         LOG "  Setting $card_name to $best_profile profile"
         pactl set-card-profile "$card_name" "$best_profile" 2>/dev/null || \
           LOG "  Warning: Could not set profile for $card_name"
+        
+        # Update WirePlumber's saved preference to lock this profile
+        local state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/wireplumber"
+        local profile_file="$state_dir/default-profile"
+        if [ -f "$profile_file" ]; then
+          # Remove any existing entry for this card and add the new one
+          sed -i "/^$card_name=/d" "$profile_file" 2>/dev/null || true
+          echo "$card_name=$best_profile" >> "$profile_file"
+          LOG "  Saved profile preference to WirePlumber state"
+        fi
       else
         LOG "  $card_name does not have analog-stereo profile, skipping"
       fi
     fi
   done < <(pactl list short cards 2>/dev/null)
+  
+  # Wait for profile changes to propagate
+  sleep 1
+}
+
+disable_excluded_devices() {
+  # Disable excluded devices by setting their card profile to "off"
+  # This prevents PipeWire from creating sinks for them at all
+  if [ ${#EXCLUDE_PATTERNS[@]} -eq 0 ]; then
+    return
+  fi
+  
+  LOG "Disabling excluded audio devices..."
+  while IFS= read -r card_name; do
+    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+      if [[ "$card_name" == *"$pattern"* ]]; then
+        LOG "  Disabling card '$card_name' (matches pattern '$pattern')"
+        pactl set-card-profile "$card_name" off 2>/dev/null || true
+        
+        # Save to WirePlumber state so it persists
+        local profile_file="${HOME}/.local/state/wireplumber/default-profile"
+        if [ -f "$profile_file" ]; then
+          sed -i "/^$card_name=/d" "$profile_file" 2>/dev/null || true
+          echo "$card_name=off" >> "$profile_file"
+        fi
+        break
+      fi
+    done
+  done < <(pactl list short cards 2>/dev/null | awk '{print $2}')
+  
+  sleep 1
 }
 
 detect_sinks() {
   # Produce a list of sink names (second column), excluding dummy sinks
-  sinks=( $(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -v "auto_null" | grep -v "dummy") )
+  local all_sinks=( $(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -v "auto_null" | grep -v "dummy") )
+  
+  # Filter out excluded patterns
+  sinks=()
+  for sink in "${all_sinks[@]}"; do
+    local excluded=0
+    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+      if [[ "$sink" == *"$pattern"* ]]; then
+        LOG "Excluding sink '$sink' (matches pattern '$pattern')"
+        excluded=1
+        break
+      fi
+    done
+    if [ $excluded -eq 0 ]; then
+      sinks+=("$sink")
+    fi
+  done
+  
   if [ ${#sinks[@]} -eq 0 ]; then
-    LOG "No real sinks detected by pactl (excluding dummy/null sinks)."
+    LOG "No real sinks detected by pactl (excluding dummy/null/excluded sinks)."
     return 1
   fi
 
@@ -335,76 +403,62 @@ load_combined() {
     pactl set-sink-volume "${COMBINED_SINK_NAME}" 100% 2>/dev/null || LOG "  Warning: Could not set combined sink volume"
     pactl set-sink-mute "${COMBINED_SINK_NAME}" 0 2>/dev/null || true
     
-    # Activate the HDMI sink by playing a brief silent audio to wake it up
-    LOG "Activating HDMI sink..."
-    # Create a 0.1 second silent audio file and play it to the HDMI sink to activate it
-    (paplay -d "${SECONDARY_SINK}" /dev/zero --rate=48000 --channels=2 --format=s16le --volume=0 2>/dev/null &
-     sleep 0.2
-     pkill -P $$ paplay 2>/dev/null || true) || true
-
-    # Toggle HDMI card profile to force reinitialization (helps capture devices detect audio)
-    LOG "Toggling HDMI card profile to force reinit (avoids physical replug)..."
-    # Find the card index for the secondary sink
-    card_index=$(pactl list sinks 2>/dev/null | awk -v sink="${SECONDARY_SINK}" 'BEGIN{RS="\n\n"} $0~sink { if (match($0,/alsa.card = "?([0-9]+)"?/,m)) print m[1] }') || true
-    if [ -n "$card_index" ]; then
-      card_name=$(pactl list short cards 2>/dev/null | awk -v idx="$card_index" '$1==idx {print $2}') || true
-      if [ -n "$card_name" ]; then
-        # Try to choose a reasonable hdmi profile; fall back to the current active profile
-        preferred_profile=$(pactl list cards 2>/dev/null | awk -v name="$card_name" 'BEGIN{RS="\n\n"} $0~name { if (match($0,/output:[^\n]+hdmi[^:\n]*/i,m)) { gsub(/\n/,"",m[0]); gsub(/^[ \t]+/,"",m[0]); print m[0]; exit } }') || true
-        # Cleanup preferred_profile string (extract profile name)
-        if [ -n "$preferred_profile" ]; then
-          # preferred_profile might look like: output:hdmi-stereo-extra2: Digital Stereo (HDMI 3)
-          preferred_profile=$(echo "$preferred_profile" | awk -F ':' '{print $2}' | awk '{print $1}' ) || true
-        else
-          # fallback: use active profile
-          preferred_profile=$(pactl list cards 2>/dev/null | awk -v name="$card_name" 'BEGIN{RS="\n\n"} $0~name { if (match($0,/Active Profile: ([^\n]+)/,m)) print m[1] }') || true
-          preferred_profile=$(echo "$preferred_profile" | awk '{print $1}') || true
-        fi
-
-        if [ -n "$preferred_profile" ]; then
-          LOG "  Card: $card_name (index $card_index) -> toggling profile off -> $preferred_profile"
-          pactl set-card-profile "$card_name" off 2>/dev/null || true
-          sleep 0.25
-          pactl set-card-profile "$card_name" "$preferred_profile" 2>/dev/null || true
-        else
-          LOG "  Could not determine preferred profile for $card_name; skipping profile toggle"
-        fi
-      fi
-    else
-      LOG "  Could not find card index for sink ${SECONDARY_SINK}; skipping profile toggle"
-    fi
-    
-    # Also toggle USB audio device profile to ensure mixer/capture software can detect it
-    LOG "Toggling USB audio card profile to force detection by mixer software..."
-    usb_card_index=$(pactl list sinks 2>/dev/null | awk -v sink="${PRIMARY_SINK}" 'BEGIN{RS="\n\n"} $0~sink { if (match($0,/alsa.card = "?([0-9]+)"?/,m)) print m[1] }') || true
-    if [ -n "$usb_card_index" ]; then
-      usb_card_name=$(pactl list short cards 2>/dev/null | awk -v idx="$usb_card_index" '$1==idx {print $2}') || true
-      if [ -n "$usb_card_name" ] && echo "$usb_card_name" | grep -q "usb"; then
-        # Get current active profile
-        usb_active_profile=$(pactl list cards 2>/dev/null | awk -v name="$usb_card_name" 'BEGIN{RS="\n\n"} $0~name { if (match($0,/Active Profile: ([^\n]+)/,m)) print m[1] }') || true
-        usb_active_profile=$(echo "$usb_active_profile" | awk '{print $1}') || true
-        
-        if [ -n "$usb_active_profile" ] && [ "$usb_active_profile" != "off" ]; then
-          LOG "  USB Card: $usb_card_name (index $usb_card_index) -> toggling off -> $usb_active_profile"
-          pactl set-card-profile "$usb_card_name" off 2>/dev/null || true
-          sleep 0.5
-          pactl set-card-profile "$usb_card_name" "$usb_active_profile" 2>/dev/null || true
-          sleep 0.5
-        fi
-      fi
-    fi
+    # NOTE: Profile toggling removed - it was breaking the duplex analog profile set by restore_analog_profiles()
+    # and causing volumes to reset. The analog profile is now locked via WirePlumber's saved preferences.
     
     pactl set-default-sink "${COMBINED_SINK_NAME}" || LOG "Failed to set default sink (non-fatal)"
     
-    # Set default input source to USB analog input if available
+    # Set default input source to USB input (prefer analog, accept digital)
     LOG "Setting default input source..."
-    usb_analog_source=$(pactl list short sources 2>/dev/null | grep "usb-.*analog-stereo" | grep "alsa_input" | awk '{print $2}' | head -1) || true
-    if [ -n "$usb_analog_source" ]; then
-      LOG "  Setting default source to: $usb_analog_source"
-      pactl set-default-source "$usb_analog_source" 2>/dev/null || LOG "  Warning: Could not set default source"
+    usb_source=$(pactl list short sources 2>/dev/null | grep "usb-.*\(analog-stereo\|iec958-stereo\)" | grep "alsa_input" | head -1 | awk '{print $2}') || true
+    if [ -n "$usb_source" ]; then
+      LOG "  Setting default source to: $usb_source"
+      pactl set-default-source "$usb_source" 2>/dev/null || LOG "  Warning: Could not set default source"
     else
-      LOG "  No USB analog input source found, keeping current default"
+      LOG "  No USB input source found, keeping current default"
     fi
+    
+    # Re-applying volumes after profile operations to ensure they persist
+    LOG "Re-applying volumes to all sinks and sources..."
+    sleep 1
+    # Set all hardware sinks to 100%
+    while IFS= read -r sink_name; do
+      if [ -n "$sink_name" ] && [ "$sink_name" != "combined_out" ]; then
+        pactl set-sink-volume "$sink_name" 100% 2>/dev/null || true
+        pactl set-sink-mute "$sink_name" 0 2>/dev/null || true
+      fi
+    done < <(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -v "auto_null\|dummy")
+    
+    # Extra pass for HDMI devices (they can initialize slowly)
+    while IFS= read -r sink_name; do
+      if [ -n "$sink_name" ]; then
+        pactl set-sink-volume "$sink_name" 100% 2>/dev/null || true
+        pactl set-sink-mute "$sink_name" 0 2>/dev/null || true
+      fi
+    done < <(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -i "hdmi")
+    
+    # Mute excluded devices (workaround for PipeWire combine-sink bug)
+    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+      while IFS= read -r sink_name; do
+        if [ -n "$sink_name" ] && [[ "$sink_name" == *"$pattern"* ]]; then
+          LOG "  Muting excluded device: $sink_name"
+          pactl set-sink-mute "$sink_name" 1 2>/dev/null || true
+          pactl set-sink-volume "$sink_name" 0% 2>/dev/null || true
+        fi
+      done < <(pactl list short sinks 2>/dev/null | awk '{print $2}')
+    done
+    
+    # Set combined sink to 100%
+    pactl set-sink-volume "${COMBINED_SINK_NAME}" 100% 2>/dev/null || true
+    pactl set-sink-mute "${COMBINED_SINK_NAME}" 0 2>/dev/null || true
+    
+    # Set all input sources (microphones) to 100%
+    while IFS= read -r source_name; do
+      if [ -n "$source_name" ] && [[ ! "$source_name" =~ \.monitor$ ]]; then
+        pactl set-source-volume "$source_name" 100% 2>/dev/null || true
+        pactl set-source-mute "$source_name" 0 2>/dev/null || true
+      fi
+    done < <(pactl list short sources 2>/dev/null | awk '{print $2}' | grep "alsa_input")
     
     LOG "Combined sink configured and set as default"
   else
@@ -434,6 +488,9 @@ main() {
   
   # Restore analog profiles for USB devices (they often default to digital)
   restore_analog_profiles
+  
+  # Disable excluded devices completely (prevents PipeWire from creating sinks)
+  disable_excluded_devices
 
   # Retry sink detection a few times if needed
   local max_retries=10
@@ -490,21 +547,80 @@ main() {
   if command -v pactl >/dev/null 2>&1; then
     default_sink=$(pactl info 2>/dev/null | grep "Default Sink:" | cut -d' ' -f3)
     if [ -n "$default_sink" ]; then
+      local moved_count=0
       pactl list short sink-inputs 2>/dev/null | while read -r input_id rest; do
-        pactl move-sink-input "$input_id" "$default_sink" 2>/dev/null || true
+        if pactl move-sink-input "$input_id" "$default_sink" 2>/dev/null; then
+          moved_count=$((moved_count + 1))
+        fi
       done
+      [ $moved_count -gt 0 ] && LOG "  Moved $moved_count audio stream(s) to new default sink"
     fi
   fi
   
   # Find and send SIGUSR1 to Firefox (tells it to reconnect audio)
-  pgrep -x firefox >/dev/null 2>&1 && pkill -SIGUSR1 firefox 2>/dev/null && LOG "  Signaled Firefox to reconnect audio" || true
+  if pgrep -x firefox >/dev/null 2>&1; then
+    pkill -SIGUSR1 firefox 2>/dev/null && LOG "  Signaled Firefox to reconnect audio"
+    LOG "  Note: Firefox may require reload/restart for audio to work"
+  fi
   
   # Chrome/Chromium usually auto-reconnect, but we can try
   pgrep -x chrome >/dev/null 2>&1 && LOG "  Chrome detected (usually auto-reconnects)" || true
   pgrep -x chromium >/dev/null 2>&1 && LOG "  Chromium detected (usually auto-reconnects)" || true
   
   LOG ""
-  LOG "If applications still have no audio, you may need to restart them manually."
+  LOG "If applications still have no audio:"
+  LOG "  - Firefox: Reload tab (Ctrl+R) or restart browser"
+  LOG "  - Chrome/Chromium: Usually auto-reconnects, try reloading tab"
+  LOG "  - Other apps: Restart the application"
+  
+  # Final volume enforcement - set everything to 100% one more time
+  # Wait a bit longer for HDMI devices which can be slow to initialize
+  LOG ""
+  LOG "Final volume enforcement (setting all devices to 100%)..."
+  sleep 2
+  
+  # Helper to check exclusions
+  is_excluded() {
+    local sink="$1"
+    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+      if [[ "$sink" == *"$pattern"* ]]; then
+        return 0  # Excluded
+      fi
+    done
+    return 1  # Not excluded
+  }
+  
+  # First pass - all sinks (respecting exclusions)
+  while IFS= read -r sink_name; do
+    if [ -n "$sink_name" ]; then
+      if is_excluded "$sink_name"; then
+        LOG "  Muting excluded device: $sink_name"
+        pactl set-sink-mute "$sink_name" 1 2>/dev/null || true
+        pactl set-sink-volume "$sink_name" 0% 2>/dev/null || true
+      else
+        pactl set-sink-volume "$sink_name" 100% 2>/dev/null || true
+        pactl set-sink-mute "$sink_name" 0 2>/dev/null || true
+      fi
+    fi
+  done < <(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -v "auto_null\|dummy")
+  
+  # Second pass specifically for HDMI devices (they can be slow)
+  sleep 1
+  while IFS= read -r sink_name; do
+    if [ -n "$sink_name" ]; then
+      LOG "  Setting HDMI device $sink_name to 100%"
+      pactl set-sink-volume "$sink_name" 100% 2>/dev/null || true
+      pactl set-sink-mute "$sink_name" 0 2>/dev/null || true
+    fi
+  done < <(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -i "hdmi")
+  
+  while IFS= read -r source_name; do
+    if [ -n "$source_name" ] && [[ ! "$source_name" =~ \.monitor$ ]]; then
+      pactl set-source-volume "$source_name" 100% 2>/dev/null || true
+      pactl set-source-mute "$source_name" 0 2>/dev/null || true
+    fi
+  done < <(pactl list short sources 2>/dev/null | awk '{print $2}' | grep "alsa_input")
+  
   LOG ""
   LOG "=== reset_pipewire: done ==="
 }
