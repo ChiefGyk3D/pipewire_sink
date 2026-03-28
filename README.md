@@ -58,6 +58,8 @@ This typically requires a full system reboot. **This script provides a reboot-fr
 - ✅ **Nuclear option**: Aggressive fallback with kernel module reload for severe failures
 - ✅ **Sample rate management**: Auto-detects and fixes sample rate mismatches to prevent pitch shifting
 - ✅ **Audio power-save disable**: Prevents audio "popping" at playback start by keeping devices active
+- ✅ **RØDECaster Pro II auto-default**: Automatically sets RodeCaster as default device on every restart/replug
+- ✅ **RØDECaster input volume boost**: Compensates for lower USB audio levels vs Windows ASIO driver
 
 ## Requirements
 
@@ -119,6 +121,16 @@ cp examples/99-custom-rate.conf ~/.config/pipewire/pipewire.conf.d/
 # Install no-suspend config (prevents audio popping at playback start)
 mkdir -p ~/.config/wireplumber/wireplumber.conf.d/
 cp examples/50-no-suspend.conf ~/.config/wireplumber/wireplumber.conf.d/
+
+# (Optional) Install RØDECaster Pro II auto-default fix
+# See "RØDECaster Pro II Default Device Fix" section below
+mkdir -p ~/.config/wireplumber/wireplumber.conf.d/
+mkdir -p ~/.config/wireplumber/scripts/
+mkdir -p ~/.config/wireplumber/main.lua.d/
+cp examples/51-rodecaster-priority.conf ~/.config/wireplumber/wireplumber.conf.d/
+cp examples/rodecaster-default.lua ~/.config/wireplumber/scripts/
+cp examples/91-rodecaster-default.lua ~/.config/wireplumber/main.lua.d/
+systemctl --user restart wireplumber
 
 # (Optional) Enable systemd services
 mkdir -p ~/.config/systemd/user/
@@ -372,6 +384,97 @@ This script:
 - Automatically resets PipeWire and recreates combined sink (can be disabled)
 - Works with any USB audio device (RØDECaster, Scarlett, Behringer, etc.)
 - No physical unplugging needed!
+
+## RØDECaster Pro II Default Device Fix
+
+The RØDECaster Pro II has two persistent issues on Linux that this project addresses:
+
+### Problem 1: Default Device Resets to HDMI
+
+Every time PipeWire restarts or the RødeCaster is replugged, the node name suffix changes (e.g., `analog-stereo.19` → `analog-stereo.20`). WirePlumber saves defaults by exact node name, so it can't find the saved default and falls back to HDMI.
+
+**Solution**: A WirePlumber Lua script watches for any RødeCaster node to appear (using wildcard matching) and immediately sets it as the default sink and source, regardless of the suffix.
+
+### Problem 2: Lower Microphone Input Levels Than Windows
+
+On Windows, RØDE's ASIO driver applies gain normalization. On Linux, the generic USB audio class driver doesn't, so input levels appear noticeably lower.
+
+**Solution**: Boost the PipeWire source volume to 125% to compensate. The installer can apply this automatically.
+
+### Files Installed
+
+| File | Destination | Purpose |
+|------|-------------|---------|
+| `51-rodecaster-priority.conf` | `~/.config/wireplumber/wireplumber.conf.d/` | Sets RødeCaster priority to 2000 (higher than HDMI at ~600) |
+| `rodecaster-default.lua` | `~/.config/wireplumber/scripts/` | Watches for RødeCaster nodes and sets them as default |
+| `91-rodecaster-default.lua` | `~/.config/wireplumber/main.lua.d/` | Tells WirePlumber to load the auto-default script |
+
+### Manual Installation
+
+```bash
+# Install all three files
+mkdir -p ~/.config/wireplumber/wireplumber.conf.d/
+mkdir -p ~/.config/wireplumber/scripts/
+mkdir -p ~/.config/wireplumber/main.lua.d/
+
+cp examples/51-rodecaster-priority.conf ~/.config/wireplumber/wireplumber.conf.d/
+cp examples/rodecaster-default.lua ~/.config/wireplumber/scripts/
+cp examples/91-rodecaster-default.lua ~/.config/wireplumber/main.lua.d/
+
+# Restart WirePlumber to activate
+systemctl --user restart wireplumber
+
+# Verify RødeCaster is now default
+pactl get-default-sink    # Should show alsa_output.usb-R__DE_R__DECaster_Pro_II...
+pactl get-default-source  # Should show alsa_input.usb-R__DE_R__DECaster_Pro_II...
+```
+
+### Input Volume Boost
+
+To apply the 125% input boost manually:
+
+```bash
+# Find the RodeCaster input source
+pactl list sources short | grep R__DE | grep -v monitor
+
+# Set to 125%
+pactl set-source-volume "$(pactl list sources short | grep R__DE | grep -v monitor | awk '{print $2}')" 125%
+```
+
+WirePlumber persists this volume in `~/.local/state/wireplumber/default-routes`, so it survives restarts as long as the auto-default script keeps the node matched.
+
+### Customizing for Other USB Devices
+
+The Lua script and priority config can be adapted for any USB audio device. Edit the `node.name` match pattern in both files:
+
+```
+# In 51-rodecaster-priority.conf and rodecaster-default.lua, replace:
+#   alsa_*.usb-R__DE_R__DECaster_Pro_II*
+# with your device's node name pattern. Find it with:
+pactl list sources short
+pactl list sinks short
+```
+
+### Verifying It Works
+
+```bash
+# Check WirePlumber loaded the script (should show no errors)
+systemctl --user status wireplumber
+
+# Check priorities (RodeCaster should be 2000, HDMI ~600)
+pw-dump | python3 -c "
+import json, sys
+for obj in json.load(sys.stdin):
+    p = obj.get('info', {}).get('props', {})
+    n = p.get('node.name', '')
+    if 'hdmi' in n or 'R__DE' in n:
+        print(f\"{n}: priority={p.get('priority.session', '?')}\")
+"
+
+# Check defaults
+pactl get-default-sink
+pactl get-default-source
+```
 
 ## Troubleshooting
 

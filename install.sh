@@ -192,6 +192,94 @@ install_no_suspend_config() {
     fi
 }
 
+configure_rodecaster_default() {
+    echo ""
+    info "RØDECaster Pro II Default Device Configuration"
+    echo "════════════════════════════════════════════════════════"
+    echo ""
+    echo "The RØDECaster Pro II has two known issues on Linux:"
+    echo ""
+    echo "  1. Default device resets to HDMI after every reboot/replug"
+    echo "     because PipeWire node name suffixes change each time."
+    echo ""
+    echo "  2. Microphone input levels are lower than on Windows"
+    echo "     because Linux uses the generic USB audio driver instead"
+    echo "     of RØDE's ASIO driver which applies gain normalization."
+    echo ""
+
+    # Detect if a RodeCaster is present
+    local rode_detected=false
+    if pactl list short sinks 2>/dev/null | grep -q "R__DE_R__DECaster_Pro_II"; then
+        rode_detected=true
+        success "RØDECaster Pro II detected!"
+    else
+        info "RØDECaster Pro II not currently connected"
+    fi
+
+    echo ""
+    echo -n "Install RØDECaster auto-default and priority fix? [Y/n]: "
+    read -r install_rode
+    if [[ "$install_rode" =~ ^[Nn] ]]; then
+        info "Skipping RØDECaster configuration"
+        RODE_INSTALLED=false
+        return
+    fi
+
+    local WIREPLUMBER_CONF_DIR="${CONFIG_DIR}/wireplumber/wireplumber.conf.d"
+    local WIREPLUMBER_SCRIPTS_DIR="${CONFIG_DIR}/wireplumber/scripts"
+    local WIREPLUMBER_LUA_DIR="${CONFIG_DIR}/wireplumber/main.lua.d"
+
+    mkdir -p "$WIREPLUMBER_CONF_DIR" "$WIREPLUMBER_SCRIPTS_DIR" "$WIREPLUMBER_LUA_DIR"
+
+    # Install priority boost config
+    if [ -f "$SCRIPT_DIR/examples/51-rodecaster-priority.conf" ]; then
+        cp "$SCRIPT_DIR/examples/51-rodecaster-priority.conf" "$WIREPLUMBER_CONF_DIR/"
+        success "Installed RØDECaster priority boost config"
+    fi
+
+    # Install auto-default Lua script
+    if [ -f "$SCRIPT_DIR/examples/rodecaster-default.lua" ]; then
+        cp "$SCRIPT_DIR/examples/rodecaster-default.lua" "$WIREPLUMBER_SCRIPTS_DIR/"
+        success "Installed RØDECaster auto-default script"
+    fi
+
+    # Install Lua loader
+    if [ -f "$SCRIPT_DIR/examples/91-rodecaster-default.lua" ]; then
+        cp "$SCRIPT_DIR/examples/91-rodecaster-default.lua" "$WIREPLUMBER_LUA_DIR/"
+        success "Installed WirePlumber script loader"
+    fi
+
+    RODE_INSTALLED=true
+
+    # Configure input volume boost
+    echo ""
+    echo "Microphone Input Volume Boost"
+    echo "─────────────────────────────────────────────────────"
+    echo "Linux USB audio levels are typically lower than Windows."
+    echo "A 125% boost compensates for the missing ASIO gain normalization."
+    echo ""
+    echo -n "Apply 125% input volume boost? [Y/n]: "
+    read -r boost_vol
+    if [[ ! "$boost_vol" =~ ^[Nn] ]]; then
+        if $rode_detected; then
+            # Apply to whichever input is currently active
+            local rode_src
+            rode_src=$(pactl list sources short 2>/dev/null | grep "R__DE" | grep -v monitor | awk '{print $2}')
+            if [ -n "$rode_src" ]; then
+                pactl set-source-volume "$rode_src" 125%
+                success "Set input volume to 125% on: $rode_src"
+            fi
+        else
+            info "Volume boost will apply when the RØDECaster is connected"
+            info "Run: pactl set-source-volume \$(pactl list sources short | grep R__DE | grep -v monitor | awk '{print \$2}') 125%"
+        fi
+    fi
+
+    echo ""
+    success "RØDECaster default device fix installed!"
+    info "WirePlumber restart required to activate (will happen on next reboot or run: systemctl --user restart wireplumber)"
+}
+
 configure_systemd_services() {
     echo ""
     info "Systemd Service Configuration"
@@ -386,6 +474,9 @@ print_summary() {
     success "Installed scripts to: $INSTALL_DIR"
     success "Installed configs to: $CONFIG_DIR"
     success "Audio power-save disabled (no more audio pop on playback start)"
+    if [ "${RODE_INSTALLED:-false}" = true ]; then
+        success "RØDECaster Pro II: auto-default + priority boost installed"
+    fi
     echo ""
     info "Available commands:"
     echo "  reset-pipewire          - Reset PipeWire and create combined sink"
@@ -444,6 +535,7 @@ main() {
     install_scripts
     install_sample_rate_config
     install_no_suspend_config
+    configure_rodecaster_default
     configure_reset_behavior
     configure_device_exclusions
     update_reset_script_config
