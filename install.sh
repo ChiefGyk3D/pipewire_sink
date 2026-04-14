@@ -451,6 +451,125 @@ configure_device_exclusions() {
     fi
 }
 
+configure_nvidia_integration() {
+    echo ""
+    info "NVIDIA Capture Card Integration (Optional)"
+    echo "════════════════════════════════════════════════════════"
+    echo ""
+    echo "If you use an HDMI capture card with the NVIDIA X11 Multi-Monitor"
+    echo "Toolkit, the combined audio sink can be created automatically"
+    echo "whenever the capture card is detected (at boot and on hotplug)."
+    echo ""
+    echo "  https://github.com/ChiefGyk3D/nvidia-display-layout"
+    echo ""
+    
+    if [ -x "$HOME/.screenlayout/apply-layout.sh" ]; then
+        if grep -q "RESET_PIPEWIRE_BIN" "$HOME/.screenlayout/apply-layout.sh" 2>/dev/null; then
+            success "NVIDIA display layout with audio integration already installed"
+            echo "  reset-pipewire will be called automatically when a capture card is detected."
+            return
+        else
+            warning "NVIDIA display layout found but without audio integration"
+            echo "  Re-run the NVIDIA setup wizard to enable PipeWire integration:"
+            echo "  cd nvidia-display-layout && ./setup-wizard.sh"
+            echo ""
+            
+            read -p "Patch existing apply-layout.sh to add audio integration? [Y/n]: " patch_layout
+            if [[ ! "$patch_layout" =~ ^[Nn] ]]; then
+                # Check if there's a capture card branch in the script
+                if grep -q "nvidia-capture.sh" "$HOME/.screenlayout/apply-layout.sh" 2>/dev/null; then
+                    # Detect the NVIDIA audio card
+                    local nvidia_audio_card
+                    nvidia_audio_card=$(pactl list short cards 2>/dev/null | grep -i "pci.*nvidia\|nvidia.*pci\|pci.*hdmi" | head -1 | awk '{print $2}')
+                    nvidia_audio_card="${nvidia_audio_card:-alsa_card.pci-0000_08_00.1}"
+                    
+                    # Add the integration block after nvidia-capture.sh call
+                    if ! grep -q "RESET_PIPEWIRE_BIN" "$HOME/.screenlayout/apply-layout.sh" 2>/dev/null; then
+                        sed -i '/^export XAUTHORITY/a\
+\
+NVIDIA_AUDIO_CARD="'"$nvidia_audio_card"'"\
+HDMI_PROFILE="output:hdmi-stereo"\
+\
+# Optional: Path to reset-pipewire script (installed by pipewire_sink project)\
+# Set to empty string or "none" to disable audio integration\
+RESET_PIPEWIRE_BIN="${RESET_PIPEWIRE_BIN:-$HOME/.local/bin/reset-pipewire}"' "$HOME/.screenlayout/apply-layout.sh"
+                        
+                        # Add HDMI handshake fix and PipeWire reset after the capture.sh call
+                        sed -i '/nvidia-capture.sh/a\
+\
+    # Wait for HDMI audio handshake after MetaMode change\
+    sleep 2\
+\
+    # Force NVIDIA HDMI audio profile active\
+    if command -v pactl \&>/dev/null; then\
+        pactl set-card-profile "$NVIDIA_AUDIO_CARD" "$HDMI_PROFILE" 2>/dev/null\
+    fi\
+\
+    # Reset PipeWire and create combined audio sink\
+    if [ -n "$RESET_PIPEWIRE_BIN" ] \&\& [ "$RESET_PIPEWIRE_BIN" != "none" ] \&\& [ -x "$RESET_PIPEWIRE_BIN" ]; then\
+        echo "$(date '"'"'+%Y-%m-%d %H:%M:%S'"'"') - Capture card detected, resetting PipeWire combined sink..."\
+        sleep 3\
+        "$RESET_PIPEWIRE_BIN" 2>\&1 | while IFS= read -r line; do\
+            echo "$(date '"'"'+%Y-%m-%d %H:%M:%S'"'"') - [pipewire] $line"\
+        done\
+    fi' "$HOME/.screenlayout/apply-layout.sh"
+                        
+                        success "Patched apply-layout.sh with audio integration"
+                    fi
+                else
+                    warning "No capture card detected in apply-layout.sh — skipping patch"
+                    echo "  Re-run the NVIDIA setup wizard with capture card enabled:"
+                    echo "  cd nvidia-display-layout && ./setup-wizard.sh"
+                fi
+            fi
+        fi
+    else
+        echo -n "Do you use an NVIDIA capture card for streaming? [y/N]: "
+        read -r has_nvidia
+        if [[ "$has_nvidia" =~ ^[Yy] ]]; then
+            echo ""
+            read -p "Install NVIDIA display layout toolkit now? [Y/n]: " install_nvidia
+            if [[ ! "$install_nvidia" =~ ^[Nn] ]]; then
+                local nvidia_tmp
+                nvidia_tmp=$(mktemp -d)
+                echo ""
+                echo -e "${BLUE}ℹ${NC} Cloning nvidia-display-layout..."
+                if git clone https://github.com/ChiefGyk3D/nvidia-display-layout.git "$nvidia_tmp" 2>/dev/null; then
+                    echo -e "${GREEN}✓${NC} Cloned nvidia-display-layout"
+                    echo ""
+                    echo "Launching NVIDIA setup wizard..."
+                    echo "The wizard will configure your displays and capture card."
+                    echo "Audio integration will be enabled automatically since reset-pipewire is installed."
+                    echo ""
+                    (cd "$nvidia_tmp" && ./setup-wizard.sh)
+                    rm -rf "$nvidia_tmp"
+                    
+                    if [ -x "$HOME/.screenlayout/apply-layout.sh" ] && grep -q "RESET_PIPEWIRE_BIN" "$HOME/.screenlayout/apply-layout.sh" 2>/dev/null; then
+                        echo ""
+                        echo -e "${GREEN}✓${NC} NVIDIA + PipeWire integration is now active"
+                    fi
+                else
+                    echo -e "${RED}✗${NC} Failed to clone nvidia-display-layout"
+                    echo "  Install it manually later:"
+                    echo "  git clone https://github.com/ChiefGyk3D/nvidia-display-layout.git"
+                    echo "  cd nvidia-display-layout && ./setup-wizard.sh"
+                    rm -rf "$nvidia_tmp"
+                fi
+            else
+                echo ""
+                echo "Install it manually later:"
+                echo "  git clone https://github.com/ChiefGyk3D/nvidia-display-layout.git"
+                echo "  cd nvidia-display-layout && ./setup-wizard.sh"
+                echo ""
+                info "The NVIDIA setup wizard will detect reset-pipewire and enable"
+                info "automatic combined sink creation on capture card detection."
+            fi
+        else
+            info "Skipped NVIDIA integration"
+        fi
+    fi
+}
+
 test_installation() {
     echo ""
     info "Testing installation..."
@@ -506,6 +625,10 @@ print_summary() {
         success "Watchdog will automatically monitor and fix audio issues"
     fi
     
+    if [ -x "$HOME/.screenlayout/apply-layout.sh" ] && grep -q "RESET_PIPEWIRE_BIN" "$HOME/.screenlayout/apply-layout.sh" 2>/dev/null; then
+        success "NVIDIA capture card integration active (auto-creates combined sink on hotplug)"
+    fi
+    
     echo ""
 }
 
@@ -540,6 +663,7 @@ main() {
     configure_device_exclusions
     update_reset_script_config
     configure_systemd_services
+    configure_nvidia_integration
     test_installation
     print_summary
 }

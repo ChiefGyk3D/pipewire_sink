@@ -476,6 +476,69 @@ pactl get-default-sink
 pactl get-default-source
 ```
 
+## NVIDIA Capture Card Integration (Optional)
+
+If you use an HDMI capture card with the [NVIDIA X11 Multi-Monitor Toolkit](https://github.com/ChiefGyk3D/nvidia-display-layout), the combined audio sink can be automatically created whenever the capture card is detected — both at startup and on hotplug.
+
+### How It Works
+
+The NVIDIA toolkit's `apply-layout.sh` script detects whether a capture card is connected and applies the correct display layout. When `reset-pipewire` is installed to `~/.local/bin/`, the layout script will automatically:
+
+1. Detect the capture card is connected
+2. Apply the NVIDIA display layout (mirror to capture card)
+3. Wait for the HDMI audio handshake
+4. Call `reset-pipewire` to create the combined audio sink
+
+This means the combined sink is recreated automatically whenever:
+- You log in and the capture card is already connected
+- You plug in the capture card while the system is running
+- A display change triggers the NVIDIA hotplug monitor
+
+When the capture card is **not** connected, the audio reset is skipped entirely.
+
+### Setup
+
+1. **Install the NVIDIA capture card toolkit** (if not already):
+
+   ```bash
+   git clone https://github.com/ChiefGyk3D/nvidia-display-layout.git
+   cd nvidia-display-layout
+   ./setup-wizard.sh
+   ```
+
+2. **Install this project** (if not already):
+
+   ```bash
+   ./install.sh
+   ```
+
+   This installs `reset-pipewire` to `~/.local/bin/`, which the NVIDIA toolkit automatically detects.
+
+3. **No additional configuration needed.** The integration is automatic as long as both projects are installed.
+
+### Verifying Integration
+
+```bash
+# Check the display monitor log for audio reset entries
+cat /tmp/nvidia-display-monitor.log | grep pipewire
+
+# Lines prefixed with [pipewire] indicate the audio reset ran
+```
+
+### Disabling Integration
+
+If you want to keep `reset-pipewire` installed but prevent it from running on display changes, edit `~/.screenlayout/apply-layout.sh` and set:
+
+```bash
+RESET_PIPEWIRE_BIN="none"
+```
+
+Or set the environment variable:
+
+```bash
+RESET_PIPEWIRE_BIN=none ~/.screenlayout/apply-layout.sh
+```
+
 ## Troubleshooting
 
 ### Audio devices not detected
