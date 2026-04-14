@@ -3,6 +3,36 @@
 ## The Problem
 Audio stops flowing to RØDECaster speakers even though PipeWire shows everything as "RUNNING".
 
+Additionally, on Linux:
+- **Default device resets to HDMI** after every reboot/replug (node name suffixes change)
+- **Microphone input levels are lower than Windows** (missing ASIO gain normalization)
+
+## Default Device Fix (NEW)
+
+Install the auto-default WirePlumber scripts to permanently fix HDMI fallback:
+
+```bash
+# Via the installer (recommended)
+./install.sh
+# Select "Y" when prompted for RØDECaster configuration
+
+# Or manually
+cp examples/51-rodecaster-priority.conf ~/.config/wireplumber/wireplumber.conf.d/
+cp examples/rodecaster-default.lua ~/.config/wireplumber/scripts/
+cp examples/91-rodecaster-default.lua ~/.config/wireplumber/main.lua.d/
+systemctl --user restart wireplumber
+```
+
+## Input Volume Boost
+
+Compensate for lower Linux USB audio levels (125% matches Windows):
+
+```bash
+pactl set-source-volume "$(pactl list sources short | grep R__DE | grep -v monitor | awk '{print $2}')" 125%
+```
+
+WirePlumber persists this volume automatically.
+
 ## Root Cause
 RØDECaster Pro II firmware (especially 1.6.8+) enters a stuck state where it requires **physical USB reconnection** to reset its internal audio routing. Software resets don't work.
 

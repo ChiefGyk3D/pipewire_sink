@@ -58,6 +58,8 @@ This typically requires a full system reboot. **This script provides a reboot-fr
 - ✅ **Nuclear option**: Aggressive fallback with kernel module reload for severe failures
 - ✅ **Sample rate management**: Auto-detects and fixes sample rate mismatches to prevent pitch shifting
 - ✅ **Audio power-save disable**: Prevents audio "popping" at playback start by keeping devices active
+- ✅ **RØDECaster Pro II auto-default**: Automatically sets RodeCaster as default device on every restart/replug
+- ✅ **RØDECaster input volume boost**: Compensates for lower USB audio levels vs Windows ASIO driver
 
 ## Requirements
 
@@ -119,6 +121,16 @@ cp examples/99-custom-rate.conf ~/.config/pipewire/pipewire.conf.d/
 # Install no-suspend config (prevents audio popping at playback start)
 mkdir -p ~/.config/wireplumber/wireplumber.conf.d/
 cp examples/50-no-suspend.conf ~/.config/wireplumber/wireplumber.conf.d/
+
+# (Optional) Install RØDECaster Pro II auto-default fix
+# See "RØDECaster Pro II Default Device Fix" section below
+mkdir -p ~/.config/wireplumber/wireplumber.conf.d/
+mkdir -p ~/.config/wireplumber/scripts/
+mkdir -p ~/.config/wireplumber/main.lua.d/
+cp examples/51-rodecaster-priority.conf ~/.config/wireplumber/wireplumber.conf.d/
+cp examples/rodecaster-default.lua ~/.config/wireplumber/scripts/
+cp examples/91-rodecaster-default.lua ~/.config/wireplumber/main.lua.d/
+systemctl --user restart wireplumber
 
 # (Optional) Enable systemd services
 mkdir -p ~/.config/systemd/user/
@@ -372,6 +384,160 @@ This script:
 - Automatically resets PipeWire and recreates combined sink (can be disabled)
 - Works with any USB audio device (RØDECaster, Scarlett, Behringer, etc.)
 - No physical unplugging needed!
+
+## RØDECaster Pro II Default Device Fix
+
+The RØDECaster Pro II has two persistent issues on Linux that this project addresses:
+
+### Problem 1: Default Device Resets to HDMI
+
+Every time PipeWire restarts or the RødeCaster is replugged, the node name suffix changes (e.g., `analog-stereo.19` → `analog-stereo.20`). WirePlumber saves defaults by exact node name, so it can't find the saved default and falls back to HDMI.
+
+**Solution**: A WirePlumber Lua script watches for any RødeCaster node to appear (using wildcard matching) and immediately sets it as the default sink and source, regardless of the suffix.
+
+### Problem 2: Lower Microphone Input Levels Than Windows
+
+On Windows, RØDE's ASIO driver applies gain normalization. On Linux, the generic USB audio class driver doesn't, so input levels appear noticeably lower.
+
+**Solution**: Boost the PipeWire source volume to 125% to compensate. The installer can apply this automatically.
+
+### Files Installed
+
+| File | Destination | Purpose |
+|------|-------------|---------|
+| `51-rodecaster-priority.conf` | `~/.config/wireplumber/wireplumber.conf.d/` | Sets RødeCaster priority to 2000 (higher than HDMI at ~600) |
+| `rodecaster-default.lua` | `~/.config/wireplumber/scripts/` | Watches for RødeCaster nodes and sets them as default |
+| `91-rodecaster-default.lua` | `~/.config/wireplumber/main.lua.d/` | Tells WirePlumber to load the auto-default script |
+
+### Manual Installation
+
+```bash
+# Install all three files
+mkdir -p ~/.config/wireplumber/wireplumber.conf.d/
+mkdir -p ~/.config/wireplumber/scripts/
+mkdir -p ~/.config/wireplumber/main.lua.d/
+
+cp examples/51-rodecaster-priority.conf ~/.config/wireplumber/wireplumber.conf.d/
+cp examples/rodecaster-default.lua ~/.config/wireplumber/scripts/
+cp examples/91-rodecaster-default.lua ~/.config/wireplumber/main.lua.d/
+
+# Restart WirePlumber to activate
+systemctl --user restart wireplumber
+
+# Verify RødeCaster is now default
+pactl get-default-sink    # Should show alsa_output.usb-R__DE_R__DECaster_Pro_II...
+pactl get-default-source  # Should show alsa_input.usb-R__DE_R__DECaster_Pro_II...
+```
+
+### Input Volume Boost
+
+To apply the 125% input boost manually:
+
+```bash
+# Find the RodeCaster input source
+pactl list sources short | grep R__DE | grep -v monitor
+
+# Set to 125%
+pactl set-source-volume "$(pactl list sources short | grep R__DE | grep -v monitor | awk '{print $2}')" 125%
+```
+
+WirePlumber persists this volume in `~/.local/state/wireplumber/default-routes`, so it survives restarts as long as the auto-default script keeps the node matched.
+
+### Customizing for Other USB Devices
+
+The Lua script and priority config can be adapted for any USB audio device. Edit the `node.name` match pattern in both files:
+
+```
+# In 51-rodecaster-priority.conf and rodecaster-default.lua, replace:
+#   alsa_*.usb-R__DE_R__DECaster_Pro_II*
+# with your device's node name pattern. Find it with:
+pactl list sources short
+pactl list sinks short
+```
+
+### Verifying It Works
+
+```bash
+# Check WirePlumber loaded the script (should show no errors)
+systemctl --user status wireplumber
+
+# Check priorities (RodeCaster should be 2000, HDMI ~600)
+pw-dump | python3 -c "
+import json, sys
+for obj in json.load(sys.stdin):
+    p = obj.get('info', {}).get('props', {})
+    n = p.get('node.name', '')
+    if 'hdmi' in n or 'R__DE' in n:
+        print(f\"{n}: priority={p.get('priority.session', '?')}\")
+"
+
+# Check defaults
+pactl get-default-sink
+pactl get-default-source
+```
+
+## NVIDIA Capture Card Integration (Optional)
+
+If you use an HDMI capture card with the [NVIDIA X11 Multi-Monitor Toolkit](https://github.com/ChiefGyk3D/nvidia-display-layout), the combined audio sink can be automatically created whenever the capture card is detected — both at startup and on hotplug.
+
+### How It Works
+
+The NVIDIA toolkit's `apply-layout.sh` script detects whether a capture card is connected and applies the correct display layout. When `reset-pipewire` is installed to `~/.local/bin/`, the layout script will automatically:
+
+1. Detect the capture card is connected
+2. Apply the NVIDIA display layout (mirror to capture card)
+3. Wait for the HDMI audio handshake
+4. Call `reset-pipewire` to create the combined audio sink
+
+This means the combined sink is recreated automatically whenever:
+- You log in and the capture card is already connected
+- You plug in the capture card while the system is running
+- A display change triggers the NVIDIA hotplug monitor
+
+When the capture card is **not** connected, the audio reset is skipped entirely.
+
+### Setup
+
+1. **Install the NVIDIA capture card toolkit** (if not already):
+
+   ```bash
+   git clone https://github.com/ChiefGyk3D/nvidia-display-layout.git
+   cd nvidia-display-layout
+   ./setup-wizard.sh
+   ```
+
+2. **Install this project** (if not already):
+
+   ```bash
+   ./install.sh
+   ```
+
+   This installs `reset-pipewire` to `~/.local/bin/`, which the NVIDIA toolkit automatically detects.
+
+3. **No additional configuration needed.** The integration is automatic as long as both projects are installed.
+
+### Verifying Integration
+
+```bash
+# Check the display monitor log for audio reset entries
+cat /tmp/nvidia-display-monitor.log | grep pipewire
+
+# Lines prefixed with [pipewire] indicate the audio reset ran
+```
+
+### Disabling Integration
+
+If you want to keep `reset-pipewire` installed but prevent it from running on display changes, edit `~/.screenlayout/apply-layout.sh` and set:
+
+```bash
+RESET_PIPEWIRE_BIN="none"
+```
+
+Or set the environment variable:
+
+```bash
+RESET_PIPEWIRE_BIN=none ~/.screenlayout/apply-layout.sh
+```
 
 ## Troubleshooting
 
@@ -800,6 +966,15 @@ If you find Stream Daemon useful, consider supporting development:
       <td align="left" style="padding:8px;">
         <b>Ethereum</b><br/>
         <code style="font-size:12px;">0x554f18cfB684889c3A60219BDBE7b050C39335ED</code>
+      </td>
+    </tr>
+    <tr>
+      <td align="center" style="padding:8px; min-width:120px;">
+        <img src="https://cdn.jsdelivr.net/gh/simple-icons/simple-icons/icons/solana.svg" width="28" height="28" alt="Solana"/>
+      </td>
+      <td align="left" style="padding:8px;">
+        <b>Solana</b><br/>
+        <code style="font-size:12px;">5T8h3HbyvHgLxwXgchRYbHSqRjZyAr8J7uwjLN9Fh8Jh</code>
       </td>
     </tr>
   </table>
