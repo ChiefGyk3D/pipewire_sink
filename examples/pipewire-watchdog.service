@@ -1,15 +1,18 @@
-# Systemd service to monitor PipeWire and automatically reset if audio devices disappear
+# Systemd service to monitor PipeWire and automatically recover audio.
 # Copy to ~/.config/systemd/user/pipewire-watchdog.service
+#
+# IMPORTANT (v2): no Requires=pipewire.service and no ExecStartPre sleep.
+# With Requires=, every pipewire restart (including the watchdog's own
+# recovery!) stopped the watchdog, wiped its failure counter, and put it
+# back into a blind startup window. The watchdog must outlive the thing
+# it watches. The script does its own readiness wait.
 
 [Unit]
 Description=PipeWire Audio Watchdog
 After=pipewire.service wireplumber.service pipewire-combined.service
-Requires=pipewire.service
 
 [Service]
 Type=simple
-# Wait 60 seconds after boot before starting watchdog to let audio fully initialize
-ExecStartPre=/bin/sleep 60
 ExecStart=%h/.local/bin/pipewire-watchdog
 Restart=always
 RestartSec=10

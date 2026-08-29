@@ -61,8 +61,9 @@ reset-pipewire          # Recreate combined sink
 
 ## Automatic Monitoring
 
-The watchdog service monitors audio every 30 seconds:
-- ✅ Attempts automatic recovery
+The watchdog service (v2) probes audio health every 15 seconds:
+- ✅ Detects hung daemons in ~20 seconds (hard failures skip the 3-strike wait)
+- ✅ Attempts tiered automatic recovery (restart → force kill → notify)
 - ✅ Sends desktop notification if manual replug needed
 - ✅ Check system logs: `journalctl --user -u pipewire-watchdog -f`
 

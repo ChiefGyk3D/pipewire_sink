@@ -1,16 +1,20 @@
-# Example systemd --user unit to run the reset-pipewire script at login.
-# Copy this file to ~/.config/systemd/user/pipewire-combined.service and run
-# `systemctl --user daemon-reload && systemctl --user enable --now pipewire-combined.service`
+# Systemd --user unit: ensure audio defaults at login.
+# Copy to ~/.config/systemd/user/pipewire-combined.service and run
+# `systemctl --user daemon-reload && systemctl --user enable pipewire-combined.service`
+#
+# v2: this no longer runs reset-pipewire (which RESTARTED the freshly
+# started audio stack at every login and raced PipeWire into segfaults).
+# The combined sink is created declaratively by the core via
+# ~/.config/pipewire/pipewire.conf.d/60-combined-sink.conf; this unit only
+# waits for it and enforces default sink/source and volumes.
 
 [Unit]
-Description=Setup PipeWire Combined Audio Sink
-After=pipewire.service
+Description=Ensure PipeWire Combined Sink Defaults
+After=pipewire.service pipewire-pulse.service wireplumber.service
 
 [Service]
 Type=oneshot
-# Use %h to expand to the user's home directory (portable across installs).
-# Replace the path below if you installed the script elsewhere.
-ExecStart=%h/.local/bin/reset-pipewire
+ExecStart=%h/.local/bin/pipewire-ensure-defaults
 RemainAfterExit=no
 
 [Install]

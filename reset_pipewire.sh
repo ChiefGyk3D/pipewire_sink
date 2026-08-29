@@ -138,7 +138,10 @@ reset_usb_audio_devices() {
 restart_via_systemd() {
     local existing=()
     for s in "${SERVICES[@]}"; do
-        if systemctl --user --quiet status "$s" >/dev/null 2>&1; then
+        # `cat` checks the unit file exists; `status` returned nonzero for a
+        # crashed/failed unit, which wrongly sent us down the pkill fallback
+        # path exactly when systemd management was most needed.
+        if systemctl --user cat "$s" >/dev/null 2>&1; then
             existing+=("$s")
         fi
     done
@@ -267,7 +270,8 @@ disable_excluded_devices() {
 
 detect_sinks() {
   # Produce a list of sink names (second column), excluding dummy sinks
-  local all_sinks=( $(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -v "auto_null" | grep -v "dummy") )
+  # and the combined sink itself (it must never become its own slave)
+  local all_sinks=( $(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -v "auto_null" | grep -v "dummy" | grep -vx "${COMBINED_SINK_NAME}") )
   
   # Filter out excluded patterns
   sinks=()
@@ -343,10 +347,111 @@ unload_saved_module() {
   fi
 }
 
+combined_sink_present() {
+  pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qx "${COMBINED_SINK_NAME}"
+}
+
+apply_defaults_and_volumes() {
+    # Set all slave sinks to 100% volume and unmute them
+    LOG "Setting slave sink volumes to 100%..."
+    if [ -n "${PRIMARY_SINK}" ]; then
+      pactl set-sink-volume "${PRIMARY_SINK}" 100% 2>/dev/null || LOG "  Warning: Could not set ${PRIMARY_SINK} volume"
+      pactl set-sink-mute "${PRIMARY_SINK}" 0 2>/dev/null || true
+    fi
+    if [ -n "${SECONDARY_SINK}" ]; then
+      pactl set-sink-volume "${SECONDARY_SINK}" 100% 2>/dev/null || LOG "  Warning: Could not set ${SECONDARY_SINK} volume"
+      pactl set-sink-mute "${SECONDARY_SINK}" 0 2>/dev/null || true
+    fi
+
+    # Set combined sink to 100% volume
+    LOG "Setting combined sink volume to 100%..."
+    pactl set-sink-volume "${COMBINED_SINK_NAME}" 100% 2>/dev/null || LOG "  Warning: Could not set combined sink volume"
+    pactl set-sink-mute "${COMBINED_SINK_NAME}" 0 2>/dev/null || true
+
+    pactl set-default-sink "${COMBINED_SINK_NAME}" || LOG "Failed to set default sink (non-fatal)"
+
+    # Set default input source to USB input (prefer analog, accept digital)
+    LOG "Setting default input source..."
+    usb_source=$(pactl list short sources 2>/dev/null | grep "usb-.*\(analog-stereo\|iec958-stereo\)" | grep "alsa_input" | head -1 | awk '{print $2}') || true
+    if [ -n "$usb_source" ]; then
+      LOG "  Setting default source to: $usb_source"
+      pactl set-default-source "$usb_source" 2>/dev/null || LOG "  Warning: Could not set default source"
+    else
+      LOG "  No USB input source found, keeping current default"
+    fi
+
+    # Re-applying volumes after profile operations to ensure they persist
+    LOG "Re-applying volumes to all sinks and sources..."
+    sleep 1
+    # Set all hardware sinks to 100%
+    while IFS= read -r sink_name; do
+      if [ -n "$sink_name" ] && [ "$sink_name" != "${COMBINED_SINK_NAME}" ]; then
+        pactl set-sink-volume "$sink_name" 100% 2>/dev/null || true
+        pactl set-sink-mute "$sink_name" 0 2>/dev/null || true
+      fi
+    done < <(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -v "auto_null\|dummy")
+
+    # Extra pass for HDMI devices (they can initialize slowly)
+    while IFS= read -r sink_name; do
+      if [ -n "$sink_name" ]; then
+        pactl set-sink-volume "$sink_name" 100% 2>/dev/null || true
+        pactl set-sink-mute "$sink_name" 0 2>/dev/null || true
+      fi
+    done < <(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -i "hdmi")
+
+    # Mute excluded devices (workaround for PipeWire combine-sink bug)
+    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+      while IFS= read -r sink_name; do
+        if [ -n "$sink_name" ] && [[ "$sink_name" == *"$pattern"* ]]; then
+          LOG "  Muting excluded device: $sink_name"
+          pactl set-sink-mute "$sink_name" 1 2>/dev/null || true
+          pactl set-sink-volume "$sink_name" 0% 2>/dev/null || true
+        fi
+      done < <(pactl list short sinks 2>/dev/null | awk '{print $2}')
+    done
+
+    # Set combined sink to 100%
+    pactl set-sink-volume "${COMBINED_SINK_NAME}" 100% 2>/dev/null || true
+    pactl set-sink-mute "${COMBINED_SINK_NAME}" 0 2>/dev/null || true
+
+    # Set all input sources (microphones) to 100%
+    while IFS= read -r source_name; do
+      if [ -n "$source_name" ] && [[ ! "$source_name" =~ \.monitor$ ]]; then
+        pactl set-source-volume "$source_name" 100% 2>/dev/null || true
+        pactl set-source-mute "$source_name" 0 2>/dev/null || true
+      fi
+    done < <(pactl list short sources 2>/dev/null | awk '{print $2}' | grep "alsa_input")
+
+    LOG "Combined sink configured and set as default"
+}
+
 load_combined() {
   if ! command -v pactl >/dev/null 2>&1; then
     LOG "pactl not found; skipping combined sink creation."
     return 0
+  fi
+
+  # Native declarative combined sink: when 60-combined-sink.conf is
+  # installed, the PipeWire core creates combined_out itself and reattaches
+  # slaves on hotplug. Never stack the legacy pulse module on top of it.
+  if [ -f "${HOME}/.config/pipewire/pipewire.conf.d/60-combined-sink.conf" ]; then
+    LOG "Native combined sink config detected; waiting for ${COMBINED_SINK_NAME}..."
+    local n=0
+    while [ $n -lt 15 ]; do
+      combined_sink_present && break
+      sleep 1
+      n=$((n + 1))
+    done
+    unload_saved_module   # clean up any leftover legacy pulse combine module
+    if combined_sink_present; then
+      LOG "Native combined sink is present (created by PipeWire core)."
+      detect_sinks || true
+      apply_defaults_and_volumes
+      return 0
+    fi
+    LOG "WARNING: native combined sink did not appear after 15s."
+    LOG "  Check 60-combined-sink.conf stream.rules against 'pactl list short sinks'."
+    LOG "  Falling back to legacy pulse module for this session."
   fi
 
   detect_sinks || return 1
@@ -390,77 +495,10 @@ load_combined() {
     mkdir -p "$(dirname "${MODULE_ID_FILE}")"
     printf '%s' "$mid" > "${MODULE_ID_FILE}"
     LOG "Loaded combine module id=${mid} (saved to ${MODULE_ID_FILE})."
-    
-    # Set all slave sinks to 100% volume and unmute them
-    LOG "Setting slave sink volumes to 100%..."
-    pactl set-sink-volume "${PRIMARY_SINK}" 100% 2>/dev/null || LOG "  Warning: Could not set ${PRIMARY_SINK} volume"
-    pactl set-sink-mute "${PRIMARY_SINK}" 0 2>/dev/null || true
-    pactl set-sink-volume "${SECONDARY_SINK}" 100% 2>/dev/null || LOG "  Warning: Could not set ${SECONDARY_SINK} volume"
-    pactl set-sink-mute "${SECONDARY_SINK}" 0 2>/dev/null || true
-    
-    # Set combined sink to 100% volume
-    LOG "Setting combined sink volume to 100%..."
-    pactl set-sink-volume "${COMBINED_SINK_NAME}" 100% 2>/dev/null || LOG "  Warning: Could not set combined sink volume"
-    pactl set-sink-mute "${COMBINED_SINK_NAME}" 0 2>/dev/null || true
-    
+
     # NOTE: Profile toggling removed - it was breaking the duplex analog profile set by restore_analog_profiles()
     # and causing volumes to reset. The analog profile is now locked via WirePlumber's saved preferences.
-    
-    pactl set-default-sink "${COMBINED_SINK_NAME}" || LOG "Failed to set default sink (non-fatal)"
-    
-    # Set default input source to USB input (prefer analog, accept digital)
-    LOG "Setting default input source..."
-    usb_source=$(pactl list short sources 2>/dev/null | grep "usb-.*\(analog-stereo\|iec958-stereo\)" | grep "alsa_input" | head -1 | awk '{print $2}') || true
-    if [ -n "$usb_source" ]; then
-      LOG "  Setting default source to: $usb_source"
-      pactl set-default-source "$usb_source" 2>/dev/null || LOG "  Warning: Could not set default source"
-    else
-      LOG "  No USB input source found, keeping current default"
-    fi
-    
-    # Re-applying volumes after profile operations to ensure they persist
-    LOG "Re-applying volumes to all sinks and sources..."
-    sleep 1
-    # Set all hardware sinks to 100%
-    while IFS= read -r sink_name; do
-      if [ -n "$sink_name" ] && [ "$sink_name" != "combined_out" ]; then
-        pactl set-sink-volume "$sink_name" 100% 2>/dev/null || true
-        pactl set-sink-mute "$sink_name" 0 2>/dev/null || true
-      fi
-    done < <(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -v "auto_null\|dummy")
-    
-    # Extra pass for HDMI devices (they can initialize slowly)
-    while IFS= read -r sink_name; do
-      if [ -n "$sink_name" ]; then
-        pactl set-sink-volume "$sink_name" 100% 2>/dev/null || true
-        pactl set-sink-mute "$sink_name" 0 2>/dev/null || true
-      fi
-    done < <(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -i "hdmi")
-    
-    # Mute excluded devices (workaround for PipeWire combine-sink bug)
-    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
-      while IFS= read -r sink_name; do
-        if [ -n "$sink_name" ] && [[ "$sink_name" == *"$pattern"* ]]; then
-          LOG "  Muting excluded device: $sink_name"
-          pactl set-sink-mute "$sink_name" 1 2>/dev/null || true
-          pactl set-sink-volume "$sink_name" 0% 2>/dev/null || true
-        fi
-      done < <(pactl list short sinks 2>/dev/null | awk '{print $2}')
-    done
-    
-    # Set combined sink to 100%
-    pactl set-sink-volume "${COMBINED_SINK_NAME}" 100% 2>/dev/null || true
-    pactl set-sink-mute "${COMBINED_SINK_NAME}" 0 2>/dev/null || true
-    
-    # Set all input sources (microphones) to 100%
-    while IFS= read -r source_name; do
-      if [ -n "$source_name" ] && [[ ! "$source_name" =~ \.monitor$ ]]; then
-        pactl set-source-volume "$source_name" 100% 2>/dev/null || true
-        pactl set-source-mute "$source_name" 0 2>/dev/null || true
-      fi
-    done < <(pactl list short sources 2>/dev/null | awk '{print $2}' | grep "alsa_input")
-    
-    LOG "Combined sink configured and set as default"
+    apply_defaults_and_volumes
   else
     LOG "Loaded module returned unexpected output: $out"
   fi

@@ -1,194 +1,251 @@
 #!/usr/bin/env bash
-# PipeWire Watchdog - Monitors audio devices and restarts if they disappear
-set -euo pipefail
+# PipeWire Watchdog v2 - monitors audio health and recovers automatically.
+#
+# Design notes (v2 rewrite):
+#   - The unit no longer has Requires=pipewire.service, so restarting
+#     PipeWire (by this script or by hand) does NOT kill the watchdog.
+#     v1 was torn down by systemd every time its own remedy ran, wiping
+#     its failure counter and going blind for 90+ seconds.
+#   - Two failure tiers:
+#       HARD: pactl/pw-cli cannot talk to the daemons (hung core, dead
+#             socket). Confirmed once after 5s, then recovery runs
+#             immediately - no more 90s of dead audio waiting for 3 strikes.
+#       SOFT: devices missing, combined sink gone, USB sink unresponsive.
+#             3 consecutive strikes before recovery (rides out replugs).
+#   - Grace period after any pipewire restart (intentional restarts by
+#     reset-pipewire or package upgrades are not treated as failures).
+#   - The combined sink is declarative (60-combined-sink.conf), so recovery
+#     is just a service restart + pipewire-ensure-defaults. No sink rebuild.
+#
+# Deliberately NOT `set -e`: a monitor loop must survive probe failures.
+set -u
 
 LOG() { logger -t pipewire-watchdog "$*"; }
 
 NOTIFY() {
-    # Send desktop notification if notify-send is available
     if command -v notify-send >/dev/null 2>&1; then
         DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}" \
         notify-send -u critical -t 0 "PipeWire Audio Issue" "$*" 2>/dev/null || true
     fi
 }
 
-CHECK_INTERVAL=30  # Check every 30 seconds
-MIN_SINKS=2        # Minimum number of hardware sinks expected
+CHECK_INTERVAL=15        # seconds between health checks
+SOFT_MAX_FAILURES=3      # consecutive soft failures before recovery
+RECOVERY_COOLDOWN=90     # minimum seconds between recovery attempts
+GRACE_SECS=20            # ignore failures this long after pipewire (re)starts
+MIN_SINKS=2              # minimum hardware sinks expected
 
-# ============================================================================
-# Exclude specific devices from monitoring (same patterns as reset-pipewire)
-# These devices won't be counted toward MIN_SINKS
-# Example: EXCLUDE_PATTERNS=("Jieli_Technology" "clock" "USB_Speaker")
-# ============================================================================
+# Devices excluded from the sink count (same patterns as reset-pipewire)
 EXCLUDE_PATTERNS=()
 
-# Helper function to check if a sink should be excluded
+ENSURE_DEFAULTS="$HOME/.local/bin/pipewire-ensure-defaults"
+
 is_excluded() {
-    local sink="$1"
+    local name="$1" pattern
     for pattern in "${EXCLUDE_PATTERNS[@]}"; do
-        if [[ "$sink" == *"$pattern"* ]]; then
-            return 0  # Excluded
-        fi
+        [[ "$name" == *"$pattern"* ]] && return 0
     done
-    return 1  # Not excluded
+    return 1
 }
 
-check_audio_health() {
-    # Check if pactl can connect at all (with timeout to prevent hanging)
-    if ! timeout 5 pactl info >/dev/null 2>&1; then
-        LOG "ERROR: Cannot connect to PipeWire (pactl failed or timed out)"
+# --- probes -----------------------------------------------------------------
+
+core_ok() {
+    # Native protocol straight to the pipewire core. Catches the "core alive
+    # but main loop hung, socket backlog full" failure that pactl alone can
+    # miss or misattribute.
+    timeout 3 pw-cli info 0 >/dev/null 2>&1
+}
+
+pulse_ok() {
+    # Pulse protocol via pipewire-pulse (what all desktop apps use).
+    timeout 5 pactl info >/dev/null 2>&1
+}
+
+pipewire_main_pid() {
+    systemctl --user show pipewire.service -p MainPID --value 2>/dev/null || echo 0
+}
+
+soft_check() {
+    # Returns 0 = healthy. Logs the reason on failure.
+    local sinks sink count=0
+
+    if ! pgrep -u "$USER" -x pipewire >/dev/null; then
+        LOG "SOFT: pipewire process not running"
         return 1
     fi
-    
-    # Count hardware audio sinks (excluding dummy/null devices AND excluded patterns)
-    local hw_sinks=0
+    if ! pgrep -u "$USER" -x wireplumber >/dev/null; then
+        LOG "SOFT: wireplumber process not running"
+        return 1
+    fi
+
+    sinks=$(timeout 5 pactl list short sinks 2>/dev/null | awk '{print $2}') || sinks=""
+
     while IFS= read -r sink; do
-        if [ -n "$sink" ] && ! is_excluded "$sink"; then
-            hw_sinks=$((hw_sinks + 1))
-        fi
-    done < <(timeout 5 pactl list short sinks 2>/dev/null | grep "alsa_output" | grep -v "auto_null" | awk '{print $2}')
-    
-    if [ "$hw_sinks" -lt "$MIN_SINKS" ]; then
-        LOG "WARNING: Only $hw_sinks hardware sink(s) detected (expected $MIN_SINKS+)"
+        [ -n "$sink" ] || continue
+        case "$sink" in *auto_null*|*dummy*) continue ;; esac
+        [[ "$sink" == alsa_output* ]] || continue
+        is_excluded "$sink" && continue
+        count=$((count + 1))
+    done <<< "$sinks"
+
+    if [ "$count" -lt "$MIN_SINKS" ]; then
+        LOG "SOFT: only $count hardware sink(s) present (expected >= $MIN_SINKS)"
         return 1
     fi
-    
-    # Check if PipeWire/WirePlumber are running
-    if ! pgrep -u "$USER" pipewire >/dev/null; then
-        LOG "ERROR: PipeWire not running"
-        return 1
-    fi
-    
-    if ! pgrep -u "$USER" wireplumber >/dev/null; then
-        LOG "ERROR: WirePlumber not running"
-        return 1
-    fi
-    
-    # Check for sinks in ERROR state or with device errors
-    local error_sinks
-    error_sinks=$(timeout 5 pactl list sinks 2>/dev/null | grep -c "State: ERROR" || true)
-    if [ "$error_sinks" -gt 0 ]; then
-        LOG "WARNING: $error_sinks sink(s) in ERROR state"
-        return 1
-    fi
-    
-    # Check if USB audio devices are responsive (try to read volume)
-    # If pactl hangs or fails on USB devices, they're likely stuck
-    local usb_sinks
-    usb_sinks=$(timeout 5 pactl list short sinks 2>/dev/null | grep "usb-.*analog-stereo" | awk '{print $2}' || true)
-    for sink in $usb_sinks; do
-        if ! timeout 2 pactl get-sink-volume "$sink" >/dev/null 2>&1; then
-            LOG "WARNING: USB sink $sink appears unresponsive (timeout or error)"
+
+    # Combined sink must exist if the declarative config is installed
+    if [ -f "$HOME/.config/pipewire/pipewire.conf.d/60-combined-sink.conf" ]; then
+        if ! grep -qx "combined_out" <<< "$sinks"; then
+            LOG "SOFT: combined_out sink missing despite installed config"
             return 1
         fi
-    done
-    
-    # Check if default sink is valid
+    fi
+
+    # Default sink sanity
     local default_sink
-    default_sink=$(timeout 5 pactl info 2>/dev/null | grep "Default Sink:" | awk '{print $3}')
+    default_sink=$(timeout 5 pactl info 2>/dev/null | awk -F': ' '/Default Sink:/ {print $2}')
     if [ -z "$default_sink" ] || [ "$default_sink" = "auto_null" ]; then
-        LOG "WARNING: Invalid or missing default sink"
+        LOG "SOFT: default sink is '${default_sink:-none}'"
         return 1
     fi
-    
-    # Check for recent WirePlumber errors in journal
-    if journalctl --user -u wireplumber --since "1 minute ago" 2>/dev/null | grep -qi "can't open control\|No such file"; then
-        LOG "WARNING: WirePlumber hardware errors detected in logs"
-        return 1
-    fi
-    
+
+    # USB sinks (RODECaster etc.) must answer volume queries; a hung
+    # firmware state makes these time out while everything looks RUNNING.
+    while IFS= read -r sink; do
+        [ -n "$sink" ] || continue
+        if ! timeout 3 pactl get-sink-volume "$sink" >/dev/null 2>&1; then
+            LOG "SOFT: USB sink $sink unresponsive (possible firmware stall)"
+            return 1
+        fi
+    done < <(grep -E "^alsa_output\.usb-.*" <<< "$sinks" || true)
+
     return 0
 }
 
+# --- recovery ---------------------------------------------------------------
+
+wait_healthy() {
+    local deadline=$((SECONDS + ${1:-30}))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if core_ok && pulse_ok && soft_check; then
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
+recover() {
+    local reason="$1"
+    LOG "RECOVERY start ($reason): restarting PipeWire services"
+
+    # Tier 1: orderly restart. The combined sink comes back declaratively.
+    systemctl --user restart pipewire.service pipewire-pulse.service wireplumber.service 2>&1 \
+        | logger -t pipewire-watchdog || true
+
+    if wait_healthy 30; then
+        [ -x "$ENSURE_DEFAULTS" ] && "$ENSURE_DEFAULTS" 2>&1 | logger -t pipewire-watchdog
+        LOG "RECOVERY successful (orderly restart)"
+        return 0
+    fi
+
+    # Tier 2: processes may be hung beyond systemd's reach - force kill,
+    # clear runtime sockets, start fresh.
+    LOG "RECOVERY: orderly restart insufficient, force-killing hung processes"
+    pkill -KILL -u "$USER" -x pipewire 2>/dev/null || true
+    pkill -KILL -u "$USER" -x pipewire-pulse 2>/dev/null || true
+    pkill -KILL -u "$USER" -x wireplumber 2>/dev/null || true
+    sleep 2
+    rm -rf "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/pipewire* \
+           "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/pulse* \
+           "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/pw-* 2>/dev/null || true
+    systemctl --user start pipewire.socket pipewire-pulse.socket 2>/dev/null || true
+    systemctl --user start pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null || true
+
+    if wait_healthy 30; then
+        [ -x "$ENSURE_DEFAULTS" ] && "$ENSURE_DEFAULTS" 2>&1 | logger -t pipewire-watchdog
+        LOG "RECOVERY successful (force restart)"
+        return 0
+    fi
+
+    # Tier 3: out of software options - almost always the RODECaster
+    # firmware stall that only a physical replug clears.
+    LOG "CRITICAL: recovery failed - manual USB replug likely required"
+    NOTIFY "Audio recovery failed.
+
+Physically unplug and replug the USB audio device (RODECaster), then audio should return automatically."
+    return 1
+}
+
+# --- main loop --------------------------------------------------------------
+
 main() {
-    LOG "Starting audio watchdog (checking every ${CHECK_INTERVAL}s)"
-    
-    # Wait for system to stabilize after boot before starting checks
-    # This prevents false positives when audio is still initializing
-    LOG "Waiting 30 seconds for audio system to stabilize..."
-    sleep 30
-    
-    local failures=0
-    local max_failures=3
-    
+    LOG "Watchdog v2 starting (interval ${CHECK_INTERVAL}s, soft strikes ${SOFT_MAX_FAILURES})"
+
+    # Startup: wait for the audio stack instead of a fixed blind sleep
+    local waited=0
+    until pulse_ok || [ "$waited" -ge 60 ]; do
+        sleep 2; waited=$((waited + 2))
+    done
+    LOG "Audio stack answering after ${waited}s; monitoring"
+
+    local soft_failures=0
+    local last_recovery=-999999
+    local last_pw_pid
+    last_pw_pid=$(pipewire_main_pid)
+
     while true; do
         sleep "$CHECK_INTERVAL"
-        
-        if ! check_audio_health; then
-            failures=$((failures + 1))
-            LOG "Health check failed (failure $failures/$max_failures)"
-            
-            if [ "$failures" -ge "$max_failures" ]; then
-                LOG "Maximum failures reached, triggering reset..."
-                
-                # Run the reset script
-                if [ -x "$HOME/.local/bin/reset-pipewire" ]; then
-                    # First try normal reset
-                    "$HOME/.local/bin/reset-pipewire" 2>&1 | logger -t pipewire-watchdog
-                    LOG "Reset completed, waiting for stabilization..."
-                    sleep 10
-                    
-                    # Check if reset worked
-                    if check_audio_health; then
-                        LOG "Reset successful, resetting failure counter"
-                        failures=0
-                    else
-                        LOG "WARNING: Reset didn't fully restore audio, forcibly killing hung PipeWire processes..."
-                        # If PipeWire is completely hung, regular systemctl restart won't work
-                        # Kill the processes directly first
-                        pkill -9 pipewire 2>/dev/null || true
-                        pkill -9 wireplumber 2>/dev/null || true
-                        sleep 2
-                        
-                        # Restart services
-                        systemctl --user restart pipewire pipewire-pulse wireplumber 2>&1 | logger -t pipewire-watchdog
-                        sleep 5
-                        
-                        # Try reset-pipewire again
-                        "$HOME/.local/bin/reset-pipewire" 2>&1 | logger -t pipewire-watchdog
-                        sleep 5
-                        
-                        if check_audio_health; then
-                            LOG "Force kill and restart successful, resetting failure counter"
-                            failures=0
-                        else
-                            LOG "WARNING: Force restart didn't work, trying nuclear option..."
-                            # Try nuclear reset as last resort
-                            if [ -x "$HOME/.local/bin/reset-pipewire-nuclear" ]; then
-                                "$HOME/.local/bin/reset-pipewire-nuclear" 2>&1 | logger -t pipewire-watchdog
-                                sleep 10
-                            
-                                # Try one more reset-pipewire after nuclear
-                                "$HOME/.local/bin/reset-pipewire" 2>&1 | logger -t pipewire-watchdog
-                                sleep 5
-                            
-                                if check_audio_health; then
-                                    LOG "Nuclear reset successful, resetting failure counter"
-                                    failures=0
-                                else
-                                    LOG "CRITICAL: All automatic recovery attempts failed - manual USB replug required"
-                                    NOTIFY "⚠️ Audio Stuck - Manual Fix Required\n\nPlease physically unplug and replug your USB audio device (RØDECaster).\n\nAutomatic recovery attempts have failed."
-                                    failures=0  # Reset counter to avoid spam
-                                    sleep 300  # Wait 5 minutes before checking again
-                                fi
-                            else
-                                LOG "WARNING: Nuclear reset not available, will retry normal reset"
-                                failures=0
-                                sleep 30
-                            fi
-                        fi
-                    fi
+
+        # Grace after an intentional/external pipewire restart: new MainPID
+        local pid
+        pid=$(pipewire_main_pid)
+        if [ "$pid" != "$last_pw_pid" ]; then
+            last_pw_pid="$pid"
+            soft_failures=0
+            LOG "pipewire restarted externally (pid $pid); grace ${GRACE_SECS}s"
+            sleep "$GRACE_SECS"
+            continue
+        fi
+
+        # HARD tier: daemons unreachable
+        local c=yes p=yes
+        core_ok || c=no
+        pulse_ok || p=no
+        if [ "$c" = no ] || [ "$p" = no ]; then
+            LOG "HARD: daemons unreachable (core=$c pulse=$p); confirming in 5s"
+            sleep 5
+            if ! core_ok || ! pulse_ok; then
+                if [ $((SECONDS - last_recovery)) -ge "$RECOVERY_COOLDOWN" ]; then
+                    recover "hard failure: pipewire/pipewire-pulse unreachable"
+                    last_recovery=$SECONDS
+                    last_pw_pid=$(pipewire_main_pid)
+                    soft_failures=0
                 else
-                    LOG "ERROR: reset-pipewire script not found or not executable"
-                    exit 1
+                    LOG "HARD failure persists but within recovery cooldown; waiting"
                 fi
+            else
+                LOG "HARD failure cleared on recheck (transient)"
             fi
-        else
-            # Reset failure counter on successful check
-            if [ "$failures" -gt 0 ]; then
-                LOG "Health check passed, resetting failure counter (was $failures)"
-                failures=0
+            continue
+        fi
+
+        # SOFT tier
+        if ! soft_check; then
+            soft_failures=$((soft_failures + 1))
+            LOG "Soft health check failed ($soft_failures/$SOFT_MAX_FAILURES)"
+            if [ "$soft_failures" -ge "$SOFT_MAX_FAILURES" ]; then
+                if [ $((SECONDS - last_recovery)) -ge "$RECOVERY_COOLDOWN" ]; then
+                    recover "soft failures x$soft_failures"
+                    last_recovery=$SECONDS
+                    last_pw_pid=$(pipewire_main_pid)
+                fi
+                soft_failures=0
             fi
+        elif [ "$soft_failures" -gt 0 ]; then
+            LOG "Health restored (was $soft_failures soft failure(s))"
+            soft_failures=0
         fi
     done
 }
