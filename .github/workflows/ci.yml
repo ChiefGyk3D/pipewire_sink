@@ -1,7 +1,5 @@
 # Shell lint (shellcheck, shfmt, workflow lint) is ChiefGyk3D/git-your-ship-together's bash-ci.yml; it
 # reports its gate as `CI green`, here `ci / CI green`. Nothing project-specific lives in this file.
-# shellcheck and shfmt start report-only: the existing scripts carry warnings (unused variables, SC2155,
-# SC2207) that are tracked as a follow-up. Flip both flags to false once they are clean.
 name: CI
 
 on:
@@ -23,6 +21,4 @@ jobs:
     permissions:
       contents: read
     with:
-      shellcheck-continue-on-error: true
-      shfmt-continue-on-error: true
       egress-policy: block

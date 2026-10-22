@@ -96,9 +96,10 @@ reset_usb_audio_devices() {
             continue
         fi
         
-        local vid=$(cat "$device_path/idVendor" 2>/dev/null || echo "")
-        local pid=$(cat "$device_path/idProduct" 2>/dev/null || echo "")
-        local product=$(cat "$device_path/product" 2>/dev/null || echo "unknown")
+        local vid pid product
+        vid=$(cat "$device_path/idVendor" 2>/dev/null || echo "")
+        pid=$(cat "$device_path/idProduct" 2>/dev/null || echo "")
+        product=$(cat "$device_path/product" 2>/dev/null || echo "unknown")
         
         # Check if this is an audio device (class 01 = Audio)
         # Or match known audio device vendors
@@ -271,7 +272,8 @@ disable_excluded_devices() {
 detect_sinks() {
   # Produce a list of sink names (second column), excluding dummy sinks
   # and the combined sink itself (it must never become its own slave)
-  local all_sinks=( $(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -v "auto_null" | grep -v "dummy" | grep -vx "${COMBINED_SINK_NAME}") )
+  local all_sinks
+  mapfile -t all_sinks < <(pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -v "auto_null" | grep -v "dummy" | grep -vx "${COMBINED_SINK_NAME}")
   
   # Filter out excluded patterns
   sinks=()
@@ -566,7 +568,7 @@ main() {
   # Show status summary
   LOG ""
   LOG "Audio devices status:"
-  pactl list short sinks 2>/dev/null | while read -r id name driver format channels rate state; do
+  pactl list short sinks 2>/dev/null | while read -r _ name _ _ _ _ state; do
     device_short=$(echo "$name" | sed 's/alsa_output\.//' | cut -d'.' -f1 | head -c 40)
     LOG "  [$state] $device_short"
   done

@@ -74,7 +74,6 @@ detect_audio_devices() {
 
 prompt_device_selection() {
     local prompt="$1"
-    local default="$2"
     
     # Send prompts to stderr so they're not captured by $()
     echo "$prompt" >&2
