@@ -393,6 +393,22 @@ configure_systemd_services() {
             success "Enabled and started watchdog service"
         fi
     fi
+
+    # Keep new sinks at 100% (WirePlumber restores a saved ~30% after they appear)
+    if [ -f "$SCRIPT_DIR/examples/pipewire-volume-watch.service" ]; then
+        cp "$SCRIPT_DIR/examples/pipewire-volume-watch.service" "$SYSTEMD_USER_DIR/pipewire-volume-watch.service"
+        systemctl --user daemon-reload
+        systemctl --user enable --now pipewire-volume-watch.service
+        success "Enabled volume watch service"
+    fi
+
+    # A spinning PipeWire ignores SIGTERM; cap the stop wait at 5s, not 90s
+    if [ -f "$SCRIPT_DIR/examples/pipewire-fast-stop.conf" ]; then
+        mkdir -p "$SYSTEMD_USER_DIR/pipewire.service.d"
+        cp "$SCRIPT_DIR/examples/pipewire-fast-stop.conf" "$SYSTEMD_USER_DIR/pipewire.service.d/fast-stop.conf"
+        systemctl --user daemon-reload
+        success "Installed pipewire.service fast-stop drop-in"
+    fi
 }
 
 configure_reset_behavior() {
