@@ -2,17 +2,13 @@
 # Quick audio system status check
 
 echo "=== PipeWire Status ==="
-systemctl --user is-active pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null | \
+systemctl --user is-active pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null |
     paste <(echo -e "pipewire\npipewire-pulse\nwireplumber") - | column -t
 
 echo ""
 echo "=== Audio Sinks ==="
-has_suspended=false
-pactl list short sinks | while read -r id name driver format channels rate state; do
+pactl list short sinks | while read -r id name _ _ _ _ state; do
     printf "%-3s %-60s %s\n" "$id" "$name" "$state"
-    if [ "$state" = "SUSPENDED" ]; then
-        has_suspended=true
-    fi
 done
 
 # Check if any sinks are suspended and explain

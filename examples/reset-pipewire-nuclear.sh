@@ -18,10 +18,10 @@ is_excluded() {
     local sink="$1"
     for pattern in "${EXCLUDE_PATTERNS[@]}"; do
         if [[ "$sink" == *"$pattern"* ]]; then
-            return 0  # Excluded
+            return 0 # Excluded
         fi
     done
-    return 1  # Not excluded
+    return 1 # Not excluded
 }
 
 LOG "=== NUCLEAR PIPEWIRE RESET ==="
@@ -123,10 +123,10 @@ if pactl list short sinks 2>/dev/null | head -10; then
     LOG ""
     LOG "=== Nuclear reset complete! ==="
     LOG ""
-    
+
     # Set audio devices to 100% volume (respecting exclusions)
     LOG "Setting audio devices to 100% volume (excluded devices will be muted)..."
-    
+
     # Set all sinks to 100% (or mute if excluded)
     while IFS= read -r sink; do
         if [ -n "$sink" ]; then
@@ -141,7 +141,7 @@ if pactl list short sinks 2>/dev/null | head -10; then
             fi
         fi
     done < <(pactl list short sinks | awk '{print $2}')
-    
+
     # Set all sources (microphones/inputs) to 100%
     while IFS= read -r source; do
         # Skip monitors (they're output monitors, not real inputs)
@@ -151,9 +151,9 @@ if pactl list short sinks 2>/dev/null | head -10; then
             pactl set-source-mute "$source" 0 2>/dev/null || true
         fi
     done < <(pactl list short sources | awk '{print $2}')
-    
+
     sleep 1
-    
+
     # Automatically recreate combined sink
     if [ -x "$HOME/.local/bin/reset-pipewire" ]; then
         LOG ""

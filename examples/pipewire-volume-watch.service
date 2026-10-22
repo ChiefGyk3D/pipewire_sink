@@ -1,0 +1,13 @@
+[Unit]
+Description=Keep new PipeWire sinks at 100% volume
+After=pipewire.service pipewire-pulse.service
+Wants=pipewire-pulse.service
+PartOf=pipewire.service
+
+[Service]
+ExecStart=%h/.local/bin/pipewire-ensure-defaults --watch
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

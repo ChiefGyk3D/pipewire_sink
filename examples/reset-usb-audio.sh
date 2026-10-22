@@ -52,10 +52,10 @@ for dev in /sys/bus/usb/devices/*; do
     if [ -f "$dev/idVendor" ] && [ -f "$dev/idProduct" ]; then
         vid=$(cat "$dev/idVendor" 2>/dev/null || echo "")
         pid=$(cat "$dev/idProduct" 2>/dev/null || echo "")
-        
+
         # Try to get product name
         product=$(cat "$dev/product" 2>/dev/null || echo "")
-        
+
         # Check if this matches our search
         if [ -n "$VENDOR_ID" ] && [ -n "$PRODUCT_ID" ]; then
             # Search by VID:PID
@@ -105,7 +105,7 @@ LOG "Deauthorizing device..."
 if echo 0 | sudo tee "$USB_PATH/authorized" >/dev/null 2>&1; then
     LOG "Device deauthorized successfully"
     sleep 2
-    
+
     LOG "Reauthorizing device..."
     if echo 1 | sudo tee "$USB_PATH/authorized" >/dev/null 2>&1; then
         LOG "Device reauthorized successfully"
@@ -115,16 +115,16 @@ if echo 0 | sudo tee "$USB_PATH/authorized" >/dev/null 2>&1; then
     fi
 else
     LOG "Deauthorization failed, trying driver unbind method..."
-    
+
     # Method 2: Unbind/rebind driver
     if [ -e "$USB_PATH/driver" ]; then
         DRIVER=$(basename "$(readlink -f "$USB_PATH/driver")")
         LOG "Unbinding from driver: $DRIVER"
-        
+
         if echo "$DEVICE_NAME" | sudo tee "$USB_PATH/driver/unbind" >/dev/null 2>&1; then
             LOG "Device unbound successfully"
             sleep 2
-            
+
             LOG "Rebinding to driver..."
             if echo "$DEVICE_NAME" | sudo tee "/sys/bus/usb/drivers/$DRIVER/bind" >/dev/null 2>&1; then
                 LOG "Device rebound successfully"
@@ -159,17 +159,17 @@ if [ "$AUTO_RESET_PIPEWIRE" = "1" ]; then
         LOG "Resetting PipeWire and recreating combined sink..."
         LOG "(Set AUTO_RESET_PIPEWIRE=0 to disable automatic reset)"
         LOG ""
-        
+
         # Create a script that will run as the user after we exit
         TEMP_SCRIPT=$(mktemp)
-        cat > "$TEMP_SCRIPT" << 'EOFSCRIPT'
+        cat >"$TEMP_SCRIPT" <<'EOFSCRIPT'
 #!/bin/bash
 sleep 2  # Wait for sudo to finish
 exec "$HOME/.local/bin/reset-pipewire"
 EOFSCRIPT
         chmod +x "$TEMP_SCRIPT"
         chown "$REAL_USER:$(id -gn "$REAL_USER")" "$TEMP_SCRIPT" 2>/dev/null || true
-        
+
         # Schedule it to run as the user after we exit
         if [ -n "${SUDO_USER:-}" ]; then
             # Run in background as the real user
@@ -178,10 +178,11 @@ EOFSCRIPT
             LOG "Watch progress with: journalctl --user -f -u pipewire"
         else
             # Not running with sudo, run directly
-            nohup "$RESET_SCRIPT" > /dev/null 2>&1 & disown
+            nohup "$RESET_SCRIPT" >/dev/null 2>&1 &
+            disown
             LOG "PipeWire reset started in background..."
         fi
-        
+
         LOG ""
         LOG "Done! USB device reset complete."
         LOG "PipeWire will reset automatically and recreate your combined sink."
