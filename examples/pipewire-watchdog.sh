@@ -25,15 +25,15 @@ LOG() { logger -t pipewire-watchdog "$*"; }
 NOTIFY() {
     if command -v notify-send >/dev/null 2>&1; then
         DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}" \
-        notify-send -u critical -t 0 "PipeWire Audio Issue" "$*" 2>/dev/null || true
+            notify-send -u critical -t 0 "PipeWire Audio Issue" "$*" 2>/dev/null || true
     fi
 }
 
-CHECK_INTERVAL=15        # seconds between health checks
-SOFT_MAX_FAILURES=3      # consecutive soft failures before recovery
-RECOVERY_COOLDOWN=90     # minimum seconds between recovery attempts
-GRACE_SECS=20            # ignore failures this long after pipewire (re)starts
-MIN_SINKS=2              # minimum hardware sinks expected
+CHECK_INTERVAL=15    # seconds between health checks
+SOFT_MAX_FAILURES=3  # consecutive soft failures before recovery
+RECOVERY_COOLDOWN=90 # minimum seconds between recovery attempts
+GRACE_SECS=20        # ignore failures this long after pipewire (re)starts
+MIN_SINKS=2          # minimum hardware sinks expected
 
 # Devices excluded from the sink count (same patterns as reset-pipewire)
 EXCLUDE_PATTERNS=()
@@ -83,11 +83,11 @@ soft_check() {
 
     while IFS= read -r sink; do
         [ -n "$sink" ] || continue
-        case "$sink" in *auto_null*|*dummy*) continue ;; esac
+        case "$sink" in *auto_null* | *dummy*) continue ;; esac
         [[ "$sink" == alsa_output* ]] || continue
         is_excluded "$sink" && continue
         count=$((count + 1))
-    done <<< "$sinks"
+    done <<<"$sinks"
 
     if [ "$count" -lt "$MIN_SINKS" ]; then
         LOG "SOFT: only $count hardware sink(s) present (expected >= $MIN_SINKS)"
@@ -96,7 +96,7 @@ soft_check() {
 
     # Combined sink must exist if the declarative config is installed
     if [ -f "$HOME/.config/pipewire/pipewire.conf.d/60-combined-sink.conf" ]; then
-        if ! grep -qx "combined_out" <<< "$sinks"; then
+        if ! grep -qx "combined_out" <<<"$sinks"; then
             LOG "SOFT: combined_out sink missing despite installed config"
             return 1
         fi
@@ -118,7 +118,7 @@ soft_check() {
             LOG "SOFT: USB sink $sink unresponsive (possible firmware stall)"
             return 1
         fi
-    done < <(grep -E "^alsa_output\.usb-.*" <<< "$sinks" || true)
+    done < <(grep -E "^alsa_output\.usb-.*" <<<"$sinks" || true)
 
     return 0
 }
@@ -141,8 +141,8 @@ recover() {
     LOG "RECOVERY start ($reason): restarting PipeWire services"
 
     # Tier 1: orderly restart. The combined sink comes back declaratively.
-    systemctl --user restart pipewire.service pipewire-pulse.service wireplumber.service 2>&1 \
-        | logger -t pipewire-watchdog || true
+    systemctl --user restart pipewire.service pipewire-pulse.service wireplumber.service 2>&1 |
+        logger -t pipewire-watchdog || true
 
     if wait_healthy 30; then
         [ -x "$ENSURE_DEFAULTS" ] && "$ENSURE_DEFAULTS" 2>&1 | logger -t pipewire-watchdog
@@ -158,8 +158,8 @@ recover() {
     pkill -KILL -u "$USER" -x wireplumber 2>/dev/null || true
     sleep 2
     rm -rf "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/pipewire* \
-           "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/pulse* \
-           "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/pw-* 2>/dev/null || true
+        "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/pulse* \
+        "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/pw-* 2>/dev/null || true
     systemctl --user start pipewire.socket pipewire-pulse.socket 2>/dev/null || true
     systemctl --user start pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null || true
 
@@ -186,7 +186,8 @@ main() {
     # Startup: wait for the audio stack instead of a fixed blind sleep
     local waited=0
     until pulse_ok || [ "$waited" -ge 60 ]; do
-        sleep 2; waited=$((waited + 2))
+        sleep 2
+        waited=$((waited + 2))
     done
     LOG "Audio stack answering after ${waited}s; monitoring"
 

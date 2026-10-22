@@ -24,6 +24,7 @@ jobs:
     secrets:
       DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}   # optional Service Token fallback; unset means OIDC only
     with:
+      codeql-languages: actions   # no Python or other CodeQL-supported source here
       pip-audit-requirements: ""   # no Python dependencies in this repository
       scorecard: true
       egress-policy: block

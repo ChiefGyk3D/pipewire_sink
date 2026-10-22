@@ -2,7 +2,7 @@
 # Quick audio system status check
 
 echo "=== PipeWire Status ==="
-systemctl --user is-active pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null | \
+systemctl --user is-active pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null |
     paste <(echo -e "pipewire\npipewire-pulse\nwireplumber") - | column -t
 
 echo ""

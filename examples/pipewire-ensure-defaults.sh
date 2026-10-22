@@ -49,9 +49,9 @@ for _ in $(seq 1 "$WAIT_SECS"); do
 done
 
 if [ "$found" -eq 1 ]; then
-    pactl set-default-sink "$COMBINED_SINK_NAME" 2>/dev/null \
-        && LOG "Default sink: $COMBINED_SINK_NAME" \
-        || LOG "WARNING: could not set default sink"
+    pactl set-default-sink "$COMBINED_SINK_NAME" 2>/dev/null &&
+        LOG "Default sink: $COMBINED_SINK_NAME" ||
+        LOG "WARNING: could not set default sink"
     pactl set-sink-mute "$COMBINED_SINK_NAME" 0 2>/dev/null || true
     pactl set-sink-volume "$COMBINED_SINK_NAME" 100% 2>/dev/null || true
 else
@@ -60,13 +60,13 @@ else
 fi
 
 # Default source: prefer USB analog input (mic/mixer), accept digital
-usb_source=$(pactl list short sources 2>/dev/null \
-    | awk '{print $2}' | grep "^alsa_input" \
-    | grep -E "usb-.*(analog-stereo|iec958-stereo)" | head -1) || true
+usb_source=$(pactl list short sources 2>/dev/null |
+    awk '{print $2}' | grep "^alsa_input" |
+    grep -E "usb-.*(analog-stereo|iec958-stereo)" | head -1) || true
 if [ -n "${usb_source:-}" ]; then
-    pactl set-default-source "$usb_source" 2>/dev/null \
-        && LOG "Default source: $usb_source" \
-        || LOG "WARNING: could not set default source"
+    pactl set-default-source "$usb_source" 2>/dev/null &&
+        LOG "Default source: $usb_source" ||
+        LOG "WARNING: could not set default source"
 fi
 
 # Hardware sinks to 100% unmuted, excluded devices muted. Only touches a sink
