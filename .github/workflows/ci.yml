@@ -1,0 +1,28 @@
+# Shell lint (shellcheck, shfmt, workflow lint) is ChiefGyk3D/git-your-ship-together's bash-ci.yml; it
+# reports its gate as `CI green`, here `ci / CI green`. Nothing project-specific lives in this file.
+# shellcheck and shfmt start report-only: the existing scripts carry warnings (unused variables, SC2155,
+# SC2207) that are tracked as a follow-up. Flip both flags to false once they are clean.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ci:
+    uses: ChiefGyk3D/git-your-ship-together/.github/workflows/bash-ci.yml@e5c6ec3251cf3a6eea100a1c21736f1818d5efc7 # v1.23.0
+    permissions:
+      contents: read
+    with:
+      shellcheck-continue-on-error: true
+      shfmt-continue-on-error: true
+      egress-policy: block
