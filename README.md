@@ -970,6 +970,12 @@ Mozilla Public License 2.0 (MPL-2.0) - feel free to use, modify, and distribute.
 
 If you find Stream Daemon useful, consider supporting development:
 
+<div align="center">
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/A0A4E59UP)
+
+</div>
+
 **Donate**:
 
 <div align="center">
